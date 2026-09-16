@@ -50,8 +50,11 @@ import { BUILT_IN, hexAt } from 'sno-core/snoPalette'
 Every module is its own entry point, so an import still says which module a name
 came from. `sno-core` on its own is a barrel over all of them.
 
-The package ships ES modules and a JSON palette imported as a module, so it
-expects a bundler. Both clients build with Vite.
+The package ships ES modules with the extensions Node needs on every relative
+specifier, and imports the palette JSON with an import attribute, so `dist`
+loads under plain Node as well as under a bundler. That matters because a
+consumer's test run does not bundle its dependencies: vitest externalizes
+node_modules and hands them to Node.
 
 ## Consuming it from an app
 
