@@ -1,0 +1,43 @@
+{
+  "name": "sno-core",
+  "version": "0.1.0",
+  "description": "The SNO shard format and the geometry around it: the wire payload, the 256-colour palette, the stamps, winding, outlines, triangulation and clipping. Shared by snocrash and ONOSENDAI.",
+  "license": "MIT",
+  "repository": "https://github.com/arkin0x/sno-core",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "typescript": "^5.6.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
