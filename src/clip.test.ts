@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boxContains, clipMesh, clipPoints, type Mesh } from './clip'
+import { boxContains, clipMesh, clipPoints, type Mesh } from './clip.js'
 
 /** A unit square in the xy plane at z = 0, two triangles, red to blue across x. */
 function square(): Mesh {

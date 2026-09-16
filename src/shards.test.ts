@@ -4,8 +4,8 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { TICKS_PER_UNIT, expandFaceColors, flatten, fromPayload, newShard, normalizeStored, packFaceColors, packTicks, ticksOf, toPayload, toRender, unitsLabel, unpackFaceColors, unpackTicks, validFace, validPoint, vertexAt, type ShardModel } from './shards'
-import { BUILT_IN, indexOf, readPalette, remap, resolvePalette } from './snoPalette'
+import { TICKS_PER_UNIT, expandFaceColors, flatten, fromPayload, newShard, normalizeStored, packFaceColors, packTicks, ticksOf, toPayload, toRender, unitsLabel, unpackFaceColors, unpackTicks, validFace, validPoint, vertexAt, type ShardModel } from './shards.js'
+import { BUILT_IN, indexOf, readPalette, remap, resolvePalette } from './snoPalette.js'
 
 const tri: ShardModel = {
   ...newShard('tri'),

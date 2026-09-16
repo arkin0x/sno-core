@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { hexToRgb, rgbToHex } from './shards'
-import { hsvToRgb, rgbToHsv } from './hsv'
+import { hexToRgb, rgbToHex } from './shards.js'
+import { hsvToRgb, rgbToHsv } from './hsv.js'
 
 describe('hsv', () => {
   it('names the corners of the cube', () => {

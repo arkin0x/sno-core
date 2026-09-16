@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { faceEdges } from './outline'
-import { DIVISIONS, TICKS_PER_UNIT } from './shards'
+import { faceEdges } from './outline.js'
+import { DIVISIONS, TICKS_PER_UNIT } from './shards.js'
 
 /** Edges as unordered pairs, so a test does not care which way one is written. */
 const pairs = (idx: number[]): string[] => {

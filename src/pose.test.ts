@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { applyPose, wrapSpin, type Pose, type V3 } from './pose'
+import { applyPose, wrapSpin, type Pose, type V3 } from './pose.js'
 
 describe('wrapSpin', () => {
   it('lands every spin in 0..359, so two clients write the same one', () => {

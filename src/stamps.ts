@@ -20,8 +20,8 @@
  * Pure: a stamp is a function of (kind, size, facing) and where you put it.
  */
 
-import { GRID_HALF, MAX_FACES, MAX_VERTICES, TICKS_PER_UNIT, pointKey, ticksOf, vertexAt, type ShardModel, type ShardVertex } from './shards'
-import { triangulate, type P3 } from './triangulate'
+import { GRID_HALF, MAX_FACES, MAX_VERTICES, TICKS_PER_UNIT, pointKey, ticksOf, vertexAt, type ShardModel, type ShardVertex } from './shards.js'
+import { triangulate, type P3 } from './triangulate.js'
 
 export type StampKind = 'block' | 'wedge' | 'pyramid' | 'column' | 'ring' | 'star' | 'arrow'
 export const STAMPS: StampKind[] = ['block', 'wedge', 'pyramid', 'column', 'ring', 'star', 'arrow']

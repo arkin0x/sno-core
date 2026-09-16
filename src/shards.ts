@@ -15,8 +15,8 @@
  *
  * Pure. The builder store mutates copies of these; the world draws them.
  */
-import { applyPose, wrapSpin, type Pose } from './pose'
-import { BUILT_IN, colorAt, indexOf, resolvePalette, toBytes, type Palette } from './snoPalette'
+import { applyPose, wrapSpin, type Pose } from './pose.js'
+import { BUILT_IN, colorAt, indexOf, resolvePalette, toBytes, type Palette } from './snoPalette.js'
 
 
 export type ShardMode = 'solid' | 'points' | 'lines'

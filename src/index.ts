@@ -6,16 +6,16 @@
  * reader loses when a directory becomes a package.
  */
 
-export * from './clip'
+export * from './clip.js'
 // Named rather than starred: hsv.ts and snoPalette.ts each define `Rgb`, the
 // same three numbers, and neither should have to import the other to say so.
 // The format's own is the one this barrel carries.
-export { hsvToRgb, rgbToHsv, type Hsv } from './hsv'
-export * from './orient'
-export * from './outline'
-export * from './pose'
-export * from './scale'
-export * from './shards'
-export * from './snoPalette'
-export * from './stamps'
-export * from './triangulate'
+export { hsvToRgb, rgbToHsv, type Hsv } from './hsv.js'
+export * from './orient.js'
+export * from './outline.js'
+export * from './pose.js'
+export * from './scale.js'
+export * from './shards.js'
+export * from './snoPalette.js'
+export * from './stamps.js'
+export * from './triangulate.js'

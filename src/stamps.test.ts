@@ -20,8 +20,8 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { FACED, MAX_SIZE, MIN_SIZE, STAMPS, compile, landing, onPlane, preview, stamp, type Facing, type StampKind } from './stamps'
-import { GRID_HALF, MAX_VERTICES, TICKS_PER_UNIT as T, newShard, ticksOf, validFace, validPoint, type ShardModel } from './shards'
+import { FACED, MAX_SIZE, MIN_SIZE, STAMPS, compile, landing, onPlane, preview, stamp, type Facing, type StampKind } from './stamps.js'
+import { GRID_HALF, MAX_VERTICES, TICKS_PER_UNIT as T, newShard, ticksOf, validFace, validPoint, type ShardModel } from './shards.js'
 
 const red: [number, number, number] = [1, 0, 0]
 const empty = (): ShardModel => ({ ...newShard('t'), mode: 'solid' })

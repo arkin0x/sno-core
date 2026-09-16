@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { triangulate, type P3 } from './triangulate'
+import { triangulate, type P3 } from './triangulate.js'
 
 /** Twice the area of a 3D triangle, via the cross product. */
 function area2(a: P3, b: P3, c: P3): number {

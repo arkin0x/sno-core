@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { formatCellSize, formatCellSizeLong, formatDistance } from './scale'
+import { formatCellSize, formatCellSizeLong, formatDistance } from './scale.js'
 
 describe('cell size', () => {
   it('spells the unit out for the readout and abbreviates it for the ladder', () => {

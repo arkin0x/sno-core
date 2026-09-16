@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { orientFaces, orientShard } from './orient'
-import { newell, type P3 } from './triangulate'
-import { compile, STAMPS } from './stamps'
+import { orientFaces, orientShard } from './orient.js'
+import { newell, type P3 } from './triangulate.js'
+import { compile, STAMPS } from './stamps.js'
 
 const outwardCount = (pts: P3[], faces: Array<[number, number, number]>): { outward: number; inward: number } => {
   const c = pts.reduce<P3>((a, p) => [a[0] + p[0] / pts.length, a[1] + p[1] / pts.length, a[2] + p[2] / pts.length], [0, 0, 0])

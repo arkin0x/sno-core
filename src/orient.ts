@@ -30,7 +30,7 @@
  * face it sits against.
  */
 
-import { newell, type P3 } from './triangulate'
+import { newell, type P3 } from './triangulate.js'
 
 type Face = [number, number, number]
 

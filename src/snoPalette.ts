@@ -20,7 +20,11 @@
  * is not: a model built before this existed.
  */
 
-import raw from './snoPalette.json'
+// With an import attribute, because this file is compiled and shipped, and a
+// JSON module without one is a syntax error to Node. Vite bundles it either
+// way; Node refuses it without, and vitest hands an externalized dependency
+// straight to Node.
+import raw from './snoPalette.json' with { type: 'json' }
 
 export type Rgb = [number, number, number]
 /** A palette as the wire carries it: 2 to 256 entries of three integers 0..255. */
