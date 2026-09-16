@@ -147,6 +147,73 @@ export function parsePaletteContent(text: string): Palette | null {
   return out
 }
 
+/**
+ * A palette pasted as text, which is how palettes are actually shared.
+ *
+ * The reason this exists: the tools people already use to build palettes do
+ * not hand out nostr references. espy.you's copy button produces
+ *
+ *     Dark Gray - #B4B4AF
+ *     Tomato - #FC4755
+ *     Crimson - #D1242B
+ *
+ * and a palette event's nevent, when one can be got at all, often carries no
+ * relay hint, so a reader with a different relay set finds nothing and is told
+ * only that nothing came back. Text has no such failure mode. It travels
+ * through any chat window and needs no relay to agree.
+ *
+ * So this is deliberately liberal about everything except the colors. Names,
+ * separators, punctuation and line breaks are ignored; what is collected is
+ * every `#rrggbb` in the order it appears, which covers the format above, a
+ * bare list, a comma-separated line, and a palette's own JSON pasted back.
+ * Three-digit hex is expanded the way CSS expands it. Eight digits are read as
+ * six with the alpha dropped, because a palette index has no alpha to carry.
+ *
+ * Order is kept exactly as pasted, including repeats, because the position of
+ * a color in a palette is its index and an object on the wire names it by
+ * number. Quietly removing a duplicate would renumber every color after it.
+ */
+export function parsePaletteText(text: string): { colors: Palette } | { problem: PasteProblem, found: number } {
+  // A palette's own JSON, pasted back. Tried first so that the documented
+  // `[r, g, b]` form is read as numbers rather than missed by a hex scan.
+  const json = parsePaletteContent(text)
+  if (json) return { colors: json }
+
+  // Longest first, so #rrggbbaa is read as eight and not as six with a stray
+  // pair left over. The boundary keeps a 4 or 5 digit run from being read as a
+  // 3 digit color with rubbish after it.
+  const found = text.match(/#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g) ?? []
+  const colors: Palette = found.map((hex) => {
+    const body = hex.slice(1)
+    if (body.length === 3) return hexToBytes(`#${body[0]}${body[0]}${body[1]}${body[1]}${body[2]}${body[2]}`)
+    return hexToBytes(`#${body.slice(0, 6)}`)
+  })
+  if (colors.length === 0) return { problem: 'nothing', found: 0 }
+  if (colors.length < 2) return { problem: 'too-few', found: colors.length }
+  if (colors.length > 256) return { problem: 'too-many', found: colors.length }
+  return { colors }
+}
+
+/** Why a pasted palette could not be read. */
+export type PasteProblem = 'nothing' | 'too-few' | 'too-many'
+
+/**
+ * What to tell someone about a paste that did not work.
+ *
+ * Here rather than in either client's markup, so the two say the same thing
+ * and a third would not have to invent its own wording.
+ */
+export function explainPasteProblem(problem: PasteProblem, found: number): string {
+  switch (problem) {
+    case 'nothing':
+      return 'No colors in that. A palette can be pasted as a list of hex colors, like "#FC4755", one per line or separated by commas; names beside them are ignored.'
+    case 'too-few':
+      return 'Only one color in that. A palette is two or more.'
+    case 'too-many':
+      return `That is ${found} colors. A palette holds at most 256, because a color on the wire is one byte.`
+  }
+}
+
 /* --------------------------------------------------------------------------
  * The lookup, both ways
  * ------------------------------------------------------------------------ */

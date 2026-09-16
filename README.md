@@ -9,17 +9,28 @@ wrong way round in one copy and not the other, so the same object drew solid in
 one client and inside out in the other, and the fix reached one repo and stayed
 there for a week. This package is where that class of bug goes to stop.
 
+## The format it implements
+
+SNO is specified in [DECK-0003](https://github.com/arkin0x/cyberspace/blob/master/decks/DECK-0003-sno.md),
+a deck of the [Cyberspace protocol](https://github.com/arkin0x/cyberspace). A
+standalone SNO is event kind `33331`, addressable, one per author per `d` tag.
+The deck ships a dependency-free reference validator,
+[`sno-reference.py`](https://github.com/arkin0x/cyberspace/blob/master/decks/sno-reference.py),
+which is the arbiter when this package and the spec disagree.
+
+Section numbers in the comments here refer to that deck.
+
 ## What is in it
 
 | Module | What it is |
 | --- | --- |
-| `shards` | The model, the wire payload (DECK-0003), tick packing, face colours, validation |
-| `snoPalette` | The 256-colour built-in, palette parsing, index lookup, remapping |
+| `shards` | The model, the wire payload ([DECK-0003](https://github.com/arkin0x/cyberspace/blob/master/decks/DECK-0003-sno.md) §1), tick packing, face colors, validation |
+| `snoPalette` | The 256-color built-in, palette parsing (events and pasted text), index lookup, remapping |
 | `stamps` | The seven stamps, their geometry, the cull between two that touch |
 | `triangulate` | Ear clipping and the Newell normal |
 | `orient` | Winding a mesh outward, and finding the faces buried inside a join |
 | `outline` | The edges of a set of faces |
-| `clip` | Cutting a mesh to a box, and the colour interpolated across the cut |
+| `clip` | Cutting a mesh to a box, and the color interpolated across the cut |
 | `hsv` | Hue, saturation and brightness |
 | `scale` | A gibson count as a human distance, and the size of a cell |
 | `pose` | The two pose operations the format owns: `wrapSpin` and `applyPose` |
