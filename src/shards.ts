@@ -447,16 +447,30 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     const whole = pt.map(Number) as [number, number, number]
     if (!whole.every(Number.isInteger)) return null
     const r = rest[i]
-    // A v1 payload's colours are literal triples and stay exactly as written:
-    // every shard this client made before the palette existed is one, and
-    // snapping them on read would change objects nobody asked to change. They
-    // snap when they are next published, which is when they become v2.
+    // A literal triple stays exactly as written: every shard made before the
+    // palette existed is one, and snapping them on read would change objects
+    // nobody asked to change. They snap when they are next published.
+    //
+    // Accepted in version 2 as well as version 1, and that is not laxity about
+    // the spec. Version 2 is two changes that did not ship together: the wire
+    // turned right-handed first (ONOSENDAI #165), and colour became an index
+    // two releases later (#167). Objects written in between declare v2, carry
+    // triples, and are correct in every other respect including their frame.
+    // Refusing them orphans real work, and the two forms cannot be confused,
+    // because one is an array and the other an integer. §1.3 says an index is
+    // what a writer produces; this is only what a reader tolerates, the same
+    // way §1.1a has it ignore a stray `type` rather than reject on it.
+    //
+    // The frame still follows the declared version: one of these is in the v2
+    // frame and flipping it as though it were v1 would mirror the object.
     let colour: [number, number, number]
-    if (p.v === 1) {
-      const triple = c as unknown
-      if (!Array.isArray(triple) || triple.length !== 3 || !triple.every((n) => typeof n === 'number')) return null
+    const triple = c as unknown
+    if (Array.isArray(triple)) {
+      if (triple.length !== 3 || !triple.every((n) => typeof n === 'number')) return null
       colour = clampColor(triple as [number, number, number])
     } else {
+      // An index is version 2's form, and version 1 never had one.
+      if (p.v === 1) return null
       if (!Number.isInteger(c) || (c as number) < 0 || (c as number) >= palette.length) return null
       colour = colorAt(palette, c as number)
     }

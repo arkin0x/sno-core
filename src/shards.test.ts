@@ -490,3 +490,67 @@ describe('switching palettes keeps the indices', () => {
     expect(fromPayload(toPayload(tri), 'x')!.palette).toBeUndefined()
   })
 })
+
+/**
+ * Version 2 arrived as two changes that did not ship together: the wire turned
+ * right-handed in ONOSENDAI #165, and colour became a palette index two
+ * releases later in #167. Objects written in between declare v2 and carry
+ * literal triples. They are real, they are in people's stashes and on relays,
+ * and refusing them orphans the work (arkinox's "Triforce", 2026-09-16).
+ */
+describe('a version 2 payload whose colours predate the palette', () => {
+  const TRIFORCE = {
+    v: 2, type: 'shard', name: 'Triforce', unit: 12, extent: 8, mode: 'solid',
+    vertices: [[0, 2, 0], [-1, 0, 0], [1, 0, 0], [-2, -1, 0], [0, -1, 0], [2, -1, 0],
+               [0, 2, -1], [-1, 0, -1], [1, 0, -1], [-2, -1, -1], [0, -1, -1], [2, -1, -1]],
+    ticks: [[0, 40, 0], [0, 80, 0], [0, 80, 0], -3, [0, 40, 80], [0, 80, 80], [0, 80, 80],
+            [0, 0, 80], [0, 0, 80], [0, 0, 80]],
+    colors: Array.from({ length: 12 }, () => [1, 0.8352941176470589, 0]),
+    faces: [[1, 0, 2], [3, 1, 4], [2, 4, 5], [7, 6, 8], [9, 7, 10], [8, 10, 11], [5, 0, 6],
+            [6, 11, 5], [9, 11, 5], [5, 3, 9], [9, 6, 0], [0, 3, 9], [10, 7, 1], [1, 4, 10],
+            [4, 2, 8], [8, 10, 4], [1, 2, 8], [8, 7, 1]],
+  }
+
+  it('reads, rather than being refused', () => {
+    const s = fromPayload(TRIFORCE, 'id')
+    expect(s).not.toBeNull()
+    expect(s!.vertices).toHaveLength(12)
+    expect(s!.faces).toHaveLength(18)
+    expect(s!.unit).toBe(12)
+    expect(s!.mode).toBe('solid')
+  })
+
+  it('keeps the colour exactly as written, rather than snapping it on read', () => {
+    const s = fromPayload(TRIFORCE, 'id')!
+    expect(s.vertices[0].c[0]).toBeCloseTo(1, 6)
+    expect(s.vertices[0].c[1]).toBeCloseTo(0.8352941176470589, 6)
+    expect(s.vertices[0].c[2]).toBeCloseTo(0, 6)
+  })
+
+  it('reads it in the frame it declares, not v1s', () => {
+    // The whole point of v2 is the right-handed wire. Treating one of these as
+    // v1 to get its colours read would mirror the object on Z.
+    const asV1 = fromPayload({ ...TRIFORCE, v: 1 }, 'id')!
+    const asV2 = fromPayload(TRIFORCE, 'id')!
+    // Vertex 6 is the back face, z = -1: one with a z to actually flip, since
+    // negating the front face's zero only produces -0.
+    expect(asV1.vertices[6].p[2]).toBe(-1)
+    expect(asV2.vertices[6].p[2]).not.toBe(asV1.vertices[6].p[2])
+  })
+
+  it('still refuses an index where version 1 is declared', () => {
+    // Version 1 never had indices, so an integer there is not a legacy form.
+    expect(fromPayload({ ...TRIFORCE, v: 1, colors: Array.from({ length: 12 }, () => 7) }, 'id')).toBeNull()
+  })
+
+  it('still refuses a malformed triple', () => {
+    expect(fromPayload({ ...TRIFORCE, colors: Array.from({ length: 12 }, () => [1, 0]) }, 'id')).toBeNull()
+    expect(fromPayload({ ...TRIFORCE, colors: Array.from({ length: 12 }, () => ['a', 'b', 'c']) }, 'id')).toBeNull()
+  })
+
+  it('still reads the ordinary indexed form', () => {
+    const s = fromPayload({ ...TRIFORCE, colors: Array.from({ length: 12 }, () => 40) }, 'id')
+    expect(s).not.toBeNull()
+    expect(s!.vertices).toHaveLength(12)
+  })
+})
