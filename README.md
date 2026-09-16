@@ -58,7 +58,7 @@ expects a bundler. Both clients build with Vite.
 A git dependency pinned to a tag:
 
 ```json
-"sno-core": "git+https://github.com/arkin0x/sno-core.git#v0.1.0"
+"sno-core": "git+https://github.com/arkin0x/sno-core.git#v0.1.1"
 ```
 
 `npm` records the resolved commit in the lockfile, so `npm ci` installs exactly
