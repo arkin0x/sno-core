@@ -1,6 +1,6 @@
 {
   "name": "sno-core",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "The SNO shard format and the geometry around it: the wire payload, the 256-colour palette, the stamps, winding, outlines, triangulation and clipping. Shared by snocrash and ONOSENDAI.",
   "license": "MIT",
   "repository": "https://github.com/arkin0x/sno-core",

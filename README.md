@@ -61,7 +61,7 @@ node_modules and hands them to Node.
 A git dependency pinned to a tag:
 
 ```json
-"sno-core": "git+https://github.com/arkin0x/sno-core.git#v0.1.1"
+"sno-core": "git+https://github.com/arkin0x/sno-core.git#v0.1.2"
 ```
 
 `npm` records the resolved commit in the lockfile, so `npm ci` installs exactly

@@ -60,19 +60,25 @@ export function toBytes(c: Rgb): Rgb {
  * case is an object drawn in the wrong colours and never one that cannot be
  * drawn.
  */
-export function resolvePalette(field: unknown, fetched?: string | null): Palette | null {
+export function resolvePalette(field: unknown, fetched?: string | PaletteEvent | null): Palette | null {
   if (field === undefined || field === null) return BUILT_IN
   if (typeof field === 'string') {
     if (field === BUILT_IN_NAME) return BUILT_IN
-    if (isPaletteRef(field)) return (fetched ? parsePaletteContent(fetched) : null) ?? BUILT_IN
+    if (isPaletteRef(field)) return (fetched ? parsePaletteEvent(fetched) : null) ?? BUILT_IN
     return null
   }
   return readPalette(field)
 }
 
-/** Whether a palette field names an event rather than a built-in. */
+/**
+ * Whether a palette field names an event rather than a built-in.
+ *
+ * An `nevent` names one immutable event, which is what §1.3b pins an object's
+ * colours to; an `naddr` is still accepted for a palette somebody publishes as
+ * an addressable event of their own.
+ */
 export function isPaletteRef(field: unknown): field is string {
-  return typeof field === 'string' && /^naddr1[023456789acdefghjklmnpqrstuvwxyz]{20,}$/.test(field)
+  return typeof field === 'string' && /^(nevent1|naddr1)[023456789acdefghjklmnpqrstuvwxyz]{20,}$/.test(field)
 }
 
 /** A palette carried in a payload, or null when it is not a valid one. */
@@ -87,13 +93,46 @@ export function readPalette(field: unknown): Palette | null {
   return out
 }
 
+/** As much of a nostr event as reading a palette out of one needs. */
+export interface PaletteEvent {
+  content?: string
+  tags?: string[][]
+}
+
 /**
- * A palette event's content, or null when it is not one (§1.3b).
+ * The palette an event carries, or null when it carries none (§1.3b).
  *
- * Generous about shape and silent about kind, because palettes on nostr are
- * somebody else's problem and partly solved already. A reader that accepts the
- * obvious form will read whatever convention wins without this app being
- * revised.
+ * The `c` tags are the encoding and their order is the index. They are read
+ * first because a single-letter tag is one that relays index, so `{"#c": [...]}`
+ * finds every palette containing a colour, and that capability exists only
+ * while the colours are tags. `content` is read after them, and only because
+ * an earlier draft of §1.3b described that form; nothing writes it now.
+ *
+ * Silent about kind, because palettes on nostr are somebody else's problem and
+ * partly solved already. A reader that accepts the shape will read whatever
+ * convention wins without this app being revised.
+ */
+export function parsePaletteEvent(ev: string | PaletteEvent): Palette | null {
+  if (typeof ev === 'string') return parsePaletteContent(ev)
+  const marked = (ev.tags ?? []).filter((t) => Array.isArray(t) && t[0] === 'c')
+  if (marked.length >= 2 && marked.length <= 256) {
+    const out: Palette = []
+    for (const t of marked) {
+      // One malformed value fails the whole tag path rather than being
+      // skipped: a palette with a hole in it is not the palette the author
+      // published, and every index after the hole would shift.
+      if (typeof t[1] !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(t[1])) { out.length = 0; break }
+      out.push(hexToBytes(t[1]))
+    }
+    if (out.length) return out
+  }
+  return typeof ev.content === 'string' ? parsePaletteContent(ev.content) : null
+}
+
+/**
+ * The legacy palette in an event's `content`, or null (§1.3b step 2).
+ *
+ * Read and never written. Entries are `[r, g, b]` or `"#rrggbb"`.
  */
 export function parsePaletteContent(text: string): Palette | null {
   let raw: unknown
