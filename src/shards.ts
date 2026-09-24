@@ -158,8 +158,10 @@ export const GRID_HALF = 8
 export const MIN_EXTENT = 1
 export const MAX_EXTENT = 64
 
-export const MAX_VERTICES = 512
-export const MAX_FACES = 1024
+// There is no ceiling on vertices or faces (DECK-0003 §1.8, 2026-09-24): the
+// event's size is the relay's concern, as it is for every other kind. The
+// constants that stood here, 512 and 1024, are gone rather than kept as
+// advice, so nothing downstream can enforce them by habit.
 
 /**
  * The largest `unit` a shard can be built or deployed at.
@@ -427,7 +429,7 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
   // object anyone else writes correctly.
   if (p.v !== 1 && p.v !== WIRE_VERSION) return null
   if (!Array.isArray(p.vertices) || !Array.isArray(p.colors) || !Array.isArray(p.faces)) return null
-  if (p.vertices.length !== p.colors.length || p.vertices.length > MAX_VERTICES || p.faces.length > MAX_FACES) return null
+  if (p.vertices.length !== p.colors.length) return null
   if (!MODES.includes(p.mode as ShardMode)) return null
   if (!Number.isInteger(p.unit) || (p.unit as number) < 0 || (p.unit as number) > MAX_UNIT) return null
   const rest = unpackTicks(p.ticks, p.vertices.length)

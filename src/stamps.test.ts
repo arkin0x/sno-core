@@ -21,7 +21,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { FACED, MAX_SIZE, MIN_SIZE, STAMPS, compile, landing, onPlane, preview, stamp, type Facing, type StampKind } from './stamps.js'
-import { GRID_HALF, MAX_VERTICES, TICKS_PER_UNIT as T, newShard, ticksOf, validFace, validPoint, type ShardModel } from './shards.js'
+import { GRID_HALF, TICKS_PER_UNIT as T, newShard, ticksOf, validFace, validPoint, type ShardModel } from './shards.js'
 
 const red: [number, number, number] = [1, 0, 0]
 const empty = (): ShardModel => ({ ...newShard('t'), mode: 'solid' })
@@ -243,10 +243,11 @@ describe('stamps', () => {
     expect(at.map((v) => v.c.join()).sort()).toEqual(['0,0,1', '1,0,0'])
   })
 
-  it('refuses a stamp that would not fit the budget', () => {
-    const full: ShardModel = { ...empty(), vertices: Array.from({ length: MAX_VERTICES - 4 }, (_, i) => ({ p: [i % 17 - 8, 0, 0] as [number, number, number], c: red })) }
-    expect(stamp(full, 'pyramid', 1, 0, [0, 0, 0], red)).toBeNull()
-    expect(stamp(full, 'block', 1, 0, [0, 0, 0], red)).toBeNull()
+  it('stamps onto a shard of any size: the format has no ceiling (DECK-0003 §1.8, 2026-09-24)', () => {
+    const big: ShardModel = { ...empty(), vertices: Array.from({ length: 1_000 }, (_, i) => ({ p: [i % 17 - 8, 0, 0] as [number, number, number], c: red })) }
+    const res = stamp(big, 'block', 1, 0, [0, 0, 0], red)
+    expect(res).not.toBeNull()
+    expect(res!.shard.vertices.length).toBe(1_008)
   })
 
   it('previews as a solid when it has faces and as lines when it does not', () => {
