@@ -20,7 +20,7 @@
  * Pure: a stamp is a function of (kind, size, facing) and where you put it.
  */
 
-import { GRID_HALF, MAX_FACES, MAX_VERTICES, TICKS_PER_UNIT, pointKey, ticksOf, vertexAt, type ShardModel, type ShardVertex } from './shards.js'
+import { GRID_HALF, TICKS_PER_UNIT, pointKey, ticksOf, vertexAt, type ShardModel, type ShardVertex } from './shards.js'
 import { triangulate, type P3 } from './triangulate.js'
 
 export type StampKind = 'block' | 'wedge' | 'pyramid' | 'column' | 'ring' | 'star' | 'arrow'
@@ -261,7 +261,6 @@ export function stamp(shard: ShardModel, kind: StampKind, size: number, facing: 
     added.push([f[0] + base, f[1] + base, f[2] + base])
   }
   const faces = [...shard.faces.filter((_, i) => !drop.has(i)), ...added]
-  if (vertices.length > MAX_VERTICES || faces.length > MAX_FACES) return null
   return { shard: { ...shard, vertices, faces }, culled: drop.size * 2 }
 }
 
