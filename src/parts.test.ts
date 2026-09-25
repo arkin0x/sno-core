@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_PART_DEPTH, parseAddress, partMatrix, refKey, refTags, resolveParts, type FetchRef } from './parts.js'
-import { fromPayload, ticksOf, toPayload, toRender, type Ref, type ShardModel } from './shards.js'
+import { MAX_PART_DEPTH, addPart, parseAddress, partMatrix, placedBounds, quarterTurnPart, refKey, refTags, removeParts, resolveParts, turnFromMatrix, turnMatrix, type FetchRef } from './parts.js'
+import { fromPayload, ticksOf, toPayload, toRender, type Part, type Ref, type ShardModel } from './shards.js'
 
 const PK = 'ab'.repeat(32)
 const addr = (d: string): Ref => ['a', `33331:${PK}:${d}`]
@@ -143,5 +143,81 @@ describe('resolveParts', () => {
     expect(level[0].missing).toBe('deep')
     // The fifth level is never fetched.
     expect(calls).toHaveLength(MAX_PART_DEPTH)
+  })
+})
+
+describe('editing placements', () => {
+  const place = (turn: [number, number, number], at: [number, number, number] = [0, 0, 0]): Part => ({ ref: 0, at, turn, step: 0 })
+
+  it('reads every one of the 24 quarter-turn orientations back from its matrix', () => {
+    const seen = new Set<string>()
+    for (const a of [0, 90, 180, 270]) for (const b of [0, 90, 180, 270]) for (const c of [0, 90, 180, 270]) {
+      const m = turnMatrix([a, b, c])
+      const back = turnMatrix(turnFromMatrix(m))
+      expect(back.map((x) => Math.round(x)), `${a},${b},${c}`).toEqual(m.map((x) => Math.round(x)))
+      seen.add(m.map((x) => Math.round(x)).join())
+    }
+    expect(seen.size).toBe(24)
+  })
+
+  it('turns a placement with the points around it: its vertex lands where turning the vertex would put it', async () => {
+    // A placed object with one vertex at (1, 0, 0) in its own model frame,
+    // placed at (2, 0, 0) with some turn already; TURN about Y through the
+    // origin, in the floor plane: axis 2 (Z) toward axis 0 (X), as the bench
+    // turns points on the floor.
+    const vertex = (p: Part): number[] => {
+      const r = turnMatrix(p.turn)
+      const v = [1, 0, 0]
+      return [0, 1, 2].map((i) => r[i * 3] * v[0] + r[i * 3 + 1] * v[1] + r[i * 3 + 2] * v[2] + p.at[i] / 120).map((n) => Math.round(n * 1e9) / 1e9 + 0)
+    }
+    const before = place([90, 0, 0], [240, 0, 0])
+    const turned = quarterTurnPart(before, 2, 0, [0, 0])!
+    // Turning the world point directly: (z, x) -> (-x, z) in the (2, 0) plane.
+    const w = vertex(before)
+    const expected = [w[2], w[1], -w[0]]
+    expect(vertex(turned)).toEqual(expected.map((n) => n + 0))
+    // Four quarters come home.
+    let p: Part = before
+    for (let k = 0; k < 4; k++) p = quarterTurnPart(p, 0, 1, [60, 60])!
+    expect(p).toEqual(before)
+    // Off the 64-unit bound is refused.
+    expect(quarterTurnPart(place([0, 0, 0], [7680, 0, 0]), 0, 1, [-7680, 0])).toBeNull()
+  })
+
+  it('adds a placement reusing its reference, and removing prunes references no placement uses', () => {
+    let s = read()
+    const one = addPart(s, addr('tile'), { at: [0, 0, 0], turn: [0, 0, 0], step: 0 })
+    const two = addPart(one.shard, addr('tile'), { at: [120, 0, 0], turn: [0, 0, 0], step: 0 })
+    const three = addPart(two.shard, addr('rock'), { at: [240, 0, 0], turn: [0, 0, 0], step: 0 })
+    s = three.shard
+    expect(s.refs).toEqual([addr('tile'), addr('rock')])
+    expect(s.parts!.map((p) => p.ref)).toEqual([0, 0, 1])
+    expect(three.index).toBe(2)
+    const noTile = removeParts(s, [0, 1])
+    expect(noTile.refs).toEqual([addr('rock')])
+    expect(noTile.parts).toEqual([{ ref: 0, at: [240, 0, 0], turn: [0, 0, 0], step: 0 }])
+    const none = removeParts(noTile, [0])
+    expect(none.refs).toBeUndefined()
+    expect(none.parts).toBeUndefined()
+    // And the payload of what is left round-trips.
+    expect(fromPayload(toPayload(noTile), 't')?.parts).toEqual(noTile.parts)
+  })
+
+  it('bounds the vertices and every placed thing, placeholders as unit cubes', () => {
+    const child = read({ vertices: [[0, 0, 0], [1, 2, 0]], colors: [229, 229] })
+    const parent = read({ vertices: [], colors: [], refs: [addr('c'), addr('gone')], parts: [[0, 480, 0, 0, 0, 0, 0, 0], [1, -240, 0, 0, 0, 0, 0, 0]] })
+    const b = placedBounds(parent, [
+      { part: parent.parts![0], ref: parent.refs![0], model: child, children: [] },
+      { part: parent.parts![1], ref: parent.refs![1], model: null, missing: 'unreachable', children: [] },
+    ])!
+    expect(b.min).toEqual([-2.5, -0.5, -0.5])
+    expect(b.max).toEqual([5, 2, 0.5])
+    expect(placedBounds(read({ vertices: [], colors: [] }), [])).toBeNull()
+  })
+})
+
+describe('the grid holds the placements', () => {
+  it('grows the extent to hold where each placed object stands', () => {
+    expect(read({ vertices: [], colors: [], refs: [addr('t')], parts: [[0, 1200, 0, 0, 0, 0, 0, 0]] }).extent).toBe(10)
   })
 })

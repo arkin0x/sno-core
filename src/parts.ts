@@ -13,7 +13,7 @@
  * the parent: another author's event is not this object's to guarantee.
  */
 
-import { MAX_UNIT, fromPayload, mirrorTurn, toRender, type Part, type Ref, type ShardModel } from './shards.js'
+import { MAX_UNIT, PART_REACH, fromPayload, mirrorTurn, ticksOf, toRender, type Part, type Ref, type ShardModel } from './shards.js'
 
 /** How many levels of placement a reader follows from the object it draws (§1.10). */
 export const MAX_PART_DEPTH = 4
@@ -116,7 +116,35 @@ function cs(deg: number): [number, number] {
   return [Math.cos(r), Math.sin(r)]
 }
 
-type M3 = [number, number, number, number, number, number, number, number, number]
+/** A row-major 3x3. */
+export type M3 = [number, number, number, number, number, number, number, number, number]
+
+/**
+ * The rotation a turn names: about X, then Y, then Z, all fixed axes, so
+ * Rz Ry Rx. The same formula serves the wire's frame and the model's,
+ * because mirroring each factor through Z is exactly mirrorTurn.
+ */
+export function turnMatrix(t: [number, number, number]): M3 {
+  const [ca, sa] = cs(t[0]), [cb, sb] = cs(t[1]), [cc, sc] = cs(t[2])
+  const rx: M3 = [1, 0, 0, 0, ca, -sa, 0, sa, ca]
+  const ry: M3 = [cb, 0, sb, 0, 1, 0, -sb, 0, cb]
+  const rz: M3 = [cc, -sc, 0, sc, cc, 0, 0, 0, 1]
+  return mul(rz, mul(ry, rx))
+}
+
+/** Whole degrees 0..359. */
+const whole = (rad: number): number => ((Math.round((rad * 180) / Math.PI) % 360) + 360) % 360
+
+/**
+ * The turn a rotation matrix is, back in whole degrees about X, then Y, then
+ * Z. At a quarter turn about Y, X and Z turn about the same line and only
+ * their sum is fixed, so the Z turn is taken as 0 there.
+ */
+export function turnFromMatrix(r: M3): [number, number, number] {
+  const sy = -r[6]
+  if (Math.abs(sy) < 1 - 1e-9) return [whole(Math.atan2(r[7], r[8])), whole(Math.asin(sy)), whole(Math.atan2(r[3], r[0]))]
+  return sy > 0 ? [whole(Math.atan2(r[1], r[4])), 90, 0] : [whole(Math.atan2(-r[1], r[4])), 270, 0]
+}
 /** Row-major 3x3 product. */
 function mul(a: M3, b: M3): M3 {
   const o = new Array(9).fill(0) as M3
@@ -137,12 +165,7 @@ function mul(a: M3, b: M3): M3 {
  * parent's model unit is 2^(its unit).
  */
 export function partMatrix(part: Part, parentUnit: number, placedUnit: number): number[] {
-  const [a, b, c] = mirrorTurn(part.turn)
-  const [ca, sa] = cs(a), [cb, sb] = cs(b), [cc, sc] = cs(c)
-  const rx: M3 = [1, 0, 0, 0, ca, -sa, 0, sa, ca]
-  const ry: M3 = [cb, 0, sb, 0, 1, 0, -sb, 0, cb]
-  const rz: M3 = [cc, -sc, 0, sc, cc, 0, 0, 0, 1]
-  const r = mul(rz, mul(ry, rx))
+  const r = turnMatrix(mirrorTurn(part.turn))
   const s = 2 ** (placedUnit + part.step - parentUnit)
   const [tx, ty, tz] = toRender(part.at)
   return [
@@ -151,4 +174,75 @@ export function partMatrix(part: Part, parentUnit: number, placedUnit: number): 
     r[2] * s, r[5] * s, r[8] * s, 0,
     tx, ty, tz, 1,
   ]
+}
+
+/**
+ * A placement turned a quarter about a pivot, the way the workshop's TURN
+ * turns points: in the plane of axes `a` and `b`, taking `a` toward `b`.
+ * Its origin swings about the pivot exactly as a vertex would, and its own
+ * turn takes the same quarter, so a placed object turns with the points
+ * around it. Model frame in, model frame out. Null when the origin would
+ * leave the 64-unit bound.
+ */
+export function quarterTurnPart(part: Part, a: 0 | 1 | 2, b: 0 | 1 | 2, pivot: [number, number]): Part | null {
+  const at = [...part.at] as [number, number, number]
+  const da = part.at[a] - pivot[0], db = part.at[b] - pivot[1]
+  at[a] = pivot[0] - db
+  at[b] = pivot[1] + da
+  if (at.some((n) => n < -PART_REACH || n > PART_REACH)) return null
+  // Q takes the a axis to the b axis and the b axis to minus a.
+  const q = [1, 0, 0, 0, 1, 0, 0, 0, 1] as M3
+  q[a * 3 + a] = 0; q[b * 3 + b] = 0
+  q[b * 3 + a] = 1; q[a * 3 + b] = -1
+  return { ...part, at, turn: turnFromMatrix(mul(q, turnMatrix(part.turn))) }
+}
+
+/**
+ * The object with one more placement, naming `ref`. A reference already in
+ * `refs` is reused rather than repeated (§1.10: refs names each object once).
+ * Returns the new placement's index too.
+ */
+export function addPart(s: ShardModel, ref: Ref, place: Omit<Part, 'ref'>): { shard: ShardModel; index: number } {
+  const refs = [...(s.refs ?? [])]
+  let i = refs.findIndex((r) => refKey(r) === refKey(ref))
+  if (i < 0) { i = refs.length; refs.push(ref) }
+  const parts = [...(s.parts ?? []), { ...place, ref: i }]
+  return { shard: { ...s, refs, parts }, index: parts.length - 1 }
+}
+
+/** The object without the placements at `indices`; references no placement uses any more go, and the rest renumber. */
+export function removeParts(s: ShardModel, indices: Iterable<number>): ShardModel {
+  const gone = new Set(indices)
+  const kept = (s.parts ?? []).filter((_, i) => !gone.has(i))
+  const used = [...new Set(kept.map((p) => p.ref))].sort((x, y) => x - y)
+  const renumber = new Map(used.map((old, k) => [old, k]))
+  const refs = used.map((i) => (s.refs ?? [])[i])
+  const parts = kept.map((p) => ({ ...p, ref: renumber.get(p.ref) as number }))
+  const { refs: _r, parts: _p, ...rest } = s
+  return parts.length ? { ...rest, refs, parts } : rest
+}
+
+/** An axis-aligned box in the frame renderers draw in, in the object's own model units. */
+export interface Bounds { min: [number, number, number]; max: [number, number, number] }
+
+/**
+ * What the object occupies once its parts are placed: its own vertices, each
+ * placed object's bounds carried through its placement, and a placeholder's
+ * unit cube, centred on where it stands. What a preview frames and what a
+ * parent's extent grows to hold (§1.10). Null for nothing at all.
+ */
+export function placedBounds(s: ShardModel, placed: Placed[]): Bounds | null {
+  const min: [number, number, number] = [Infinity, Infinity, Infinity]
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity]
+  const take = (p: number[]): void => { for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], p[k]); max[k] = Math.max(max[k], p[k]) } }
+  for (const v of s.vertices) take(toRender(ticksOf(v)))
+  for (const p of placed) {
+    const inner: Bounds | null = p.model ? placedBounds(p.model, p.children) : { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] }
+    if (!inner) continue
+    const m = partMatrix(p.part, s.unit, p.model ? p.model.unit : s.unit)
+    for (const x of [inner.min[0], inner.max[0]]) for (const y of [inner.min[1], inner.max[1]]) for (const z of [inner.min[2], inner.max[2]]) {
+      take([0, 1, 2].map((r) => m[r] * x + m[4 + r] * y + m[8 + r] * z + m[12 + r]))
+    }
+  }
+  return min[0] === Infinity ? null : { min, max }
 }

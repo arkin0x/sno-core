@@ -277,9 +277,12 @@ export function normalizeStored(s: ShardModel): ShardModel {
 }
 
 /** The grid half-width a shard needs to hold every vertex it has. */
-export function neededExtent(s: Pick<ShardModel, 'vertices'>): number {
+export function neededExtent(s: Pick<ShardModel, 'vertices'> & Partial<Pick<ShardModel, 'parts'>>): number {
   let m = MIN_EXTENT
   for (const v of s.vertices) for (const c of ticksOf(v)) m = Math.max(m, Math.ceil(Math.abs(c) / TICKS_PER_UNIT))
+  // Where each placed object stands, too (§1.10): its own reach is known only
+  // once it is fetched, but its origin always stands on this object's grid.
+  for (const p of s.parts ?? []) for (const c of p.at) m = Math.max(m, Math.ceil(Math.abs(c) / TICKS_PER_UNIT))
   return m
 }
 
@@ -595,7 +598,7 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     id,
     name: typeof p.name === 'string' ? p.name.slice(0, 64) : 'shard',
     unit: p.unit as number,
-    extent: Math.max(extent, neededExtent({ vertices })),
+    extent: Math.max(extent, neededExtent({ vertices, parts })),
     mode: p.mode as ShardMode,
     vertices,
     faces,
