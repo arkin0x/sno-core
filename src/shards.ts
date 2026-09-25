@@ -106,7 +106,43 @@ export interface ShardModel {
   palette?: Array<[number, number, number]>
   /** What the author called that palette. Local only; the wire carries colours, not names. */
   paletteName?: string
+  /** The objects this one places, as nostr references (DECK-0003 §1.10). Absent: it places none. */
+  refs?: Ref[]
+  /**
+   * Where each placed object stands (§1.10), in this model's frame like the
+   * vertices: the wire's with Z negated. See `Part`.
+   */
+  parts?: Part[]
   updatedAt: number
+}
+
+/**
+ * A nostr reference to a placed object, written the way a tag writes one
+ * (DECK-0003 §1.10): `a` follows its author's newest version, `e` names one
+ * event. The third entry is a relay hint.
+ *
+ * Writers here always use `a` (arkinox, 2026-09-25): an addressable kind keeps
+ * only its newest version on most relays (NIP-01: older versions MAY be
+ * discarded), so an `e` to a version that has since been replaced may find
+ * nothing. Someone who wants a build no one else can change copies the object
+ * and publishes it under their own key. `e` is still read.
+ */
+export type Ref = [kind: 'a' | 'e', target: string, relay?: string]
+
+/**
+ * One placement (DECK-0003 §1.10), kept in the model's frame: the wire's with
+ * Z negated, as the vertices are. On the wire it is eight integers; the
+ * conversion happens at the payload boundary and nowhere else.
+ */
+export interface Part {
+  /** Index into `refs`. */
+  ref: number
+  /** Where the placed object's origin stands, in this model's ticks. */
+  at: [number, number, number]
+  /** Whole degrees 0..359 about this model's X, then Y, then Z. */
+  turn: [number, number, number]
+  /** Scale step: drawn at 2^(its own unit + step) base units per model unit. */
+  step: number
 }
 
 /** Wire form: what goes in an event's content, public or decrypted. */
@@ -149,6 +185,10 @@ export interface ShardPayload {
   up?: true
   /** With `up`: the compass bearing +Z faces, a whole number 0..359. Ignored without `up`. */
   spin?: number
+  /** The objects this one places (§1.10). */
+  refs?: Ref[]
+  /** Placements, eight integers each: ref index, x y z in ticks, turns about X Y Z in whole degrees, scale step. */
+  parts?: number[][]
 }
 
 export const MODES: ShardMode[] = ['solid', 'points', 'lines']
@@ -282,6 +322,42 @@ function flipZ(v: ShardVertex): ShardVertex {
   return vertexAt([x, y, 0 - z], v.c)
 }
 
+/** The 64-unit position bound of DECK-0003 §1.8, in ticks: how far a placement may stand. */
+export const PART_REACH = 64 * TICKS_PER_UNIT
+
+const HEX64 = /^[0-9a-f]{64}$/
+const ADDRESS = /^33331:[0-9a-f]{64}:/
+
+/** §1.9 rule 11: one `refs` entry as the wire writes it, or null. */
+function readRef(r: unknown): Ref | null {
+  if (!Array.isArray(r) || r.length < 2 || r.length > 3) return null
+  const [kind, target, relay] = r as unknown[]
+  if (relay !== undefined && typeof relay !== 'string') return null
+  if (typeof target !== 'string') return null
+  if (!(kind === 'e' && HEX64.test(target)) && !(kind === 'a' && ADDRESS.test(target))) return null
+  return relay ? [kind, target, relay] : [kind, target]
+}
+
+/**
+ * A turn seen through the Z mirror between the wire and the model: turns
+ * about X and Y change sign, a turn about Z does not. Its own inverse.
+ */
+export function mirrorTurn(t: [number, number, number]): [number, number, number] {
+  return [(360 - t[0]) % 360, (360 - t[1]) % 360, t[2]]
+}
+
+/** §1.9 rule 12: one placement, eight integers, or null; `mirror` brings a v2 one into the model frame. */
+function readPart(e: unknown, refCount: number, mirror: boolean): Part | null {
+  if (!Array.isArray(e) || e.length !== 8 || !e.every((n) => Number.isInteger(n))) return null
+  const [ref, x, y, z, a, b, c, step] = e as number[]
+  if (ref < 0 || ref >= refCount) return null
+  if ([x, y, z].some((n) => n < -PART_REACH || n > PART_REACH)) return null
+  if ([a, b, c].some((n) => n < 0 || n > 359)) return null
+  const turn: [number, number, number] = [a, b, c]
+  // `0 - z`, not `-z`: see toRender.
+  return { ref, at: mirror ? [x, y, 0 - z] : [x, y, z], turn: mirror ? mirrorTurn(turn) : turn, step }
+}
+
 export function toPayload(s: ShardModel): ShardPayload {
   const vertices = s.vertices.map(flipZ)
   const palette = s.palette ?? BUILT_IN
@@ -297,6 +373,10 @@ export function toPayload(s: ShardModel): ShardPayload {
     colors: vertices.map((v) => indexOf(palette, toBytes(v.c))),
     ...(s.facecolors && s.facecolors.length === s.faces.length
       ? { facecolors: packFaceColors(s.facecolors.map((c) => indexOf(palette, toBytes(c)))) }
+      : {}),
+    // §1.10, through the same mirror as the vertices.
+    ...(s.refs && s.refs.length && s.parts && s.parts.length
+      ? { refs: s.refs.map((r) => [...r] as Ref), parts: s.parts.map((q) => [q.ref, q.at[0], q.at[1], 0 - q.at[2], ...mirrorTurn(q.turn), q.step]) }
       : {}),
     faces: s.faces,
     // `up` and `spin` are carried as data. They say the object stands on the
@@ -496,6 +576,20 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     if (!expanded) return null
     facecolors = expanded.map((i) => colorAt(palette, i))
   }
+  // §1.9 rules 11 and 12. A `parts` whose index has no `refs` entry is a
+  // rejection, which the range check gives for free when `refs` is absent.
+  let refs: Ref[] | undefined
+  if (p.refs !== undefined) {
+    if (!Array.isArray(p.refs)) return null
+    refs = []
+    for (const r of p.refs) { const ref = readRef(r); if (!ref) return null; refs.push(ref) }
+  }
+  let parts: Part[] | undefined
+  if (p.parts !== undefined) {
+    if (!Array.isArray(p.parts)) return null
+    parts = []
+    for (const e of p.parts) { const part = readPart(e, refs?.length ?? 0, p.v === WIRE_VERSION); if (!part) return null; parts.push(part) }
+  }
   const extent = Number.isInteger(p.extent) && (p.extent as number) >= MIN_EXTENT && (p.extent as number) <= MAX_EXTENT ? (p.extent as number) : GRID_HALF
   return {
     id,
@@ -513,6 +607,8 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     // the way the field is documented.
     up,
     spin: up ? wrapSpin(Number(p.spin ?? 0)) : 0,
+    ...(refs && refs.length ? { refs } : {}),
+    ...(parts && parts.length ? { parts } : {}),
     updatedAt: Date.now(),
   }
 }
