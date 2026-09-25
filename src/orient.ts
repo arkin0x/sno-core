@@ -1,13 +1,15 @@
 /**
- * orient.ts - faces wound the same way, for shading.
+ * orient.ts - the guess at which way each face looks out.
  *
- * A shard's faces come from stamps, from hand-picked corners and from FILL,
- * and their windings agree with nothing: half a stamped block's triangles
- * wind inward. Drawn unlit and two-sided, as in the world, that never showed.
- * The bench lights its faces and paints their backs dark, so that an open
- * shape shows its inside, and for that every face must wind outward.
+ * Winding is a face's front (DECK-0003 §1.4, since 2026-09-24): the side the
+ * right-hand normal of its corners, in order, points to. A reader obeys it and
+ * never guesses. The guess lives here for the author's side only: new faces
+ * are wound by it as they are made, and AUTO rewinds a whole shard by it
+ * (winding.ts). Stamps compile with half a block's triangles wound inward,
+ * and hand-picked corners and FILL wind whichever way the taps went, so
+ * without it every new face would be a coin toss.
  *
- * This pass rewinds a copy for drawing; the stored faces are untouched.
+ * This pass rewinds a copy; the faces it is given are untouched.
  *
  * Two facts decide a face's way round. Faces that share a clean edge (one
  * with exactly two faces on it) are made to agree, since a shared edge runs
@@ -16,8 +18,14 @@
  * ray from a face's middle along its normal crosses the rest of the shard an
  * even number of times when the normal points out of a closed solid and an
  * odd number when it points in. The patch goes the way most of its area
- * votes. A patch whose rays cross nothing (a flat plate, an open shell) falls
- * back to its signed volume, or to facing up.
+ * votes. A patch whose rays cross nothing falls back to its signed volume
+ * when it is closed, and otherwise (a flat plate, an open shell) to facing up,
+ * or along +X or +Z when it stands more that way.
+ *
+ * The points must be in the wire's frame (shards.ts toRender), because that
+ * is the frame the format's winding rule is stated in (DECK-0003 §1.4): the
+ * client's model frame is the wire's with Z negated, a mirror, and a face
+ * wound outward in one is wound inward in the other.
  *
  * Edges with three or more faces on them do not carry agreement across. They
  * are where solids touch: a block built on a block leaves the square between
@@ -145,14 +153,22 @@ export function orientShard(points: P3[], faces: Face[]): Oriented {
     let inward: boolean
     if (vote !== 0) inward = vote < 0
     else {
-      // Nothing to see: closed by its own volume, or flat and facing up.
+      // Nothing to see: closed by its own volume, or open and facing up.
+      // Volume only for a closed patch, one whose every edge has exactly two
+      // faces on it. An open sheet's signed volume is measured from the
+      // origin, so it says only which side of the origin the sheet sits:
+      // arkinox's Disco Floor base plate, one step below it, came out facing
+      // down and showed its dark inside through every gap (2026-09-24).
       let volume = 0, nx = 0, ny = 0, nz = 0
+      let closed = true
       for (const i of patch) {
         const [a, b, c] = out[i].map((v) => points[v])
         volume += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6
         const m = newell([a, b, c]); nx += m[0]; ny += m[1]; nz += m[2]
+        const f = out[i]
+        for (const [p, q] of [[f[0], f[1]], [f[1], f[2]], [f[2], f[0]]]) if ((byEdge.get(key(p, q)) ?? []).length !== 2) closed = false
       }
-      if (Math.abs(volume) > 1e-9) inward = volume < 0
+      if (closed && Math.abs(volume) > 1e-9) inward = volume < 0
       else {
         const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz)
         inward = ay >= ax && ay >= az ? ny < 0 : ax >= az ? nx < 0 : nz < 0

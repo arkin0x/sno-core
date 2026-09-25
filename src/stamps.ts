@@ -20,7 +20,8 @@
  * Pure: a stamp is a function of (kind, size, facing) and where you put it.
  */
 
-import { GRID_HALF, TICKS_PER_UNIT, pointKey, ticksOf, vertexAt, type ShardModel, type ShardVertex } from './shards.js'
+import { orientFaces } from './orient.js'
+import { GRID_HALF, TICKS_PER_UNIT, pointKey, ticksOf, toRender, vertexAt, type ShardModel, type ShardVertex } from './shards.js'
 import { triangulate, type P3 } from './triangulate.js'
 
 export type StampKind = 'block' | 'wedge' | 'pyramid' | 'column' | 'ring' | 'star' | 'arrow'
@@ -254,7 +255,10 @@ export function stamp(shard: ShardModel, kind: StampKind, size: number, facing: 
   })
   const drop = new Set<number>()
   const added: Tri[] = []
-  for (const f of shape.faces) {
+  // Wound outward on the stamp's own points, in the wire's frame, before it
+  // meets the shard: a stamp is whole by itself, and its faces' fronts are
+  // what readers draw (DECK-0003 §1.4). Compiled, half a block looks in.
+  for (const f of orientFaces(shape.points.map(toRender), shape.faces)) {
     const k = triKey(shape.points[f[0]], shape.points[f[1]], shape.points[f[2]])
     const hits = existing.get(k)
     if (hits && hits.length) { drop.add(hits.pop() as number); continue }

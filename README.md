@@ -28,7 +28,8 @@ Section numbers in the comments here refer to that deck.
 | `snoPalette` | The 256-color built-in, palette parsing (events and pasted text), index lookup, remapping |
 | `stamps` | The seven stamps, their geometry, the cull between two that touch |
 | `triangulate` | Ear clipping and the Newell normal |
-| `orient` | Winding a mesh outward, and finding the faces buried inside a join |
+| `orient` | The outward guess: winding a mesh outward, and finding the faces buried inside a join |
+| `winding` | Setting a face's front, which readers obey (DECK-0003 §1.4): FLIP FACE, FLIP SURFACE, AUTO, and new faces wound as they are made |
 | `outline` | The edges of a set of faces |
 | `clip` | Cutting a mesh to a box, and the color interpolated across the cut |
 | `hsv` | Hue, saturation and brightness |
