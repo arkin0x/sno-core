@@ -107,17 +107,40 @@ function span(s: number): [number, number] {
   return [lo, lo + s]
 }
 
-/** Points on a circle of radius r at n even steps, snapped to the grid, runs of repeats collapsed. */
-function circle(r: number, n: number): P3[] {
-  const out: P3[] = []
-  for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2
-    const p: P3 = [Math.round(r * Math.cos(a)), 0, Math.round(r * Math.sin(a))]
-    if (out.length && pointKey(out[out.length - 1]) === pointKey(p)) continue
-    out.push(p)
+/**
+ * A ring of radius r on the grid, in order around it from +X towards +Z.
+ *
+ * The midpoint circle algorithm: walk one eighth of the circle in whole
+ * steps, at each step taking whichever of two cells lies nearer the true
+ * circle (a running error kept in integers), then mirror that eighth into the
+ * other seven. The ring is exactly symmetric at every size and one cell
+ * thick, with no cell inside it.
+ *
+ * It replaced snapping 8r even angles to the grid (arkinox, 2026-10-05). That
+ * pulled the 45 degree points of a size 2 ring in to (1, 1), so the loop dived
+ * toward the centre at every diagonal and drew a cross, and Math.round (which
+ * takes 1.5 to 2 but -1.5 to -1) left a size 3 ring lopsided.
+ *
+ * Size 1 stays the 3 by 3 square it always was: the algorithm alone gives the
+ * four side cells, a diamond, because the corners lie outside a circle of
+ * radius 1.
+ */
+function ring(r: number): P3[] {
+  const cells = new Map<string, P3>()
+  const put = (x: number, z: number): void => { cells.set(`${x},${z}`, [x, 0, z]) }
+  if (r === 1) {
+    for (const [x, z] of [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]]) put(x, z)
+  } else {
+    let x = r, z = 0, err = 1 - r
+    while (x >= z) {
+      for (const [a, b] of [[x, z], [z, x], [-z, x], [-x, z], [-x, -z], [-z, -x], [z, -x], [x, -z]]) put(a, b)
+      z++
+      if (err < 0) err += 2 * z + 1
+      else { x--; err += 2 * (z - x) + 1 }
+    }
   }
-  if (out.length > 1 && pointKey(out[0]) === pointKey(out[out.length - 1])) out.pop()
-  return out
+  const turn = (p: P3): number => { const a = Math.atan2(p[2], p[0]); return a < 0 ? a + 2 * Math.PI : a }
+  return [...cells.values()].sort((p, q) => turn(p) - turn(q))
 }
 
 /**
@@ -147,7 +170,7 @@ function local(kind: StampKind, s: number): Shape {
         faces: [...quad(0, 1, 2, 3), ...quad(0, 3, 5, 4), ...quad(1, 4, 5, 2), [1, 0, 4], [3, 2, 5]],
       }
     }
-    case 'ring': { const pts = circle(s, 8 * s); return { points: [...pts, [...pts[0]] as P3], faces: [] } }
+    case 'ring': { const pts = ring(s); return { points: [...pts, [...pts[0]] as P3], faces: [] } }
     case 'star': {
       const pts: P3[] = []
       for (let i = 0; i < 10; i++) {

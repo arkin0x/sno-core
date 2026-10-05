@@ -173,6 +173,45 @@ describe('stamps', () => {
     expect(count('star')[1]).toBeGreaterThanOrEqual(6)
   })
 
+  describe('ring', () => {
+    // The ring's cells on the level (x, z), without the copy of the first that shuts the loop.
+    // On a grid wide enough that no size is pushed off centre by the edge.
+    const cells = (size: number): Array<[number, number]> => {
+      const { points } = compile('ring', size, 0, [0, 0, 0], 16)
+      return points.slice(0, -1).map(([x, y, z]) => { expect(y).toBe(0); return [x / T, z / T] })
+    }
+
+    it('is a clean octagon at size 2, not the cross that snapping angles drew (arkinox, 2026-10-05)', () => {
+      const got = new Set(cells(2).map(([x, z]) => `${x},${z}`))
+      const octagon = ['2,0', '2,1', '1,2', '0,2', '-1,2', '-2,1', '-2,0', '-2,-1', '-1,-2', '0,-2', '1,-2', '2,-1']
+      expect(got).toEqual(new Set(octagon))
+      expect(got.has('1,1')).toBe(false)
+    })
+
+    it('stays the 3 by 3 square at size 1', () => {
+      expect(new Set(cells(1).map(([x, z]) => `${x},${z}`))).toEqual(new Set(['1,0', '1,1', '0,1', '-1,1', '-1,0', '-1,-1', '0,-1', '1,-1']))
+    })
+
+    it('is symmetric, unbroken and never dents inward, at every size', () => {
+      for (let size = MIN_SIZE; size <= MAX_SIZE; size++) {
+        const ring = cells(size)
+        const at = new Set(ring.map(([x, z]) => `${x},${z}`))
+        expect(at.size, `size ${size}: no repeats`).toBe(ring.length)
+        for (const [x, z] of ring) {
+          // Mirror in both axes and across the diagonal: the same ring every way round.
+          for (const [a, b] of [[-x, z], [x, -z], [z, x]]) expect(at.has(`${a},${b}`), `size ${size}: (${x}, ${z}) mirrored`).toBe(true)
+          // Never more than half a unit inside the true circle.
+          expect(size - Math.hypot(x, z), `size ${size}: (${x}, ${z}) inside`).toBeLessThanOrEqual(0.5)
+        }
+        // In order around: each cell touches the next, so LINES draws no gap and no spoke.
+        for (let i = 0; i < ring.length; i++) {
+          const [x1, z1] = ring[i], [x2, z2] = ring[(i + 1) % ring.length]
+          expect(Math.max(Math.abs(x2 - x1), Math.abs(z2 - z1)), `size ${size}: step ${i}`).toBe(1)
+        }
+      }
+    })
+  })
+
   it('closes a loop only when there are no faces to draw instead', () => {
     // The closing point is for LINES, which has no other way to shut a loop.
     // A shape with triangles is drawn as triangles, and a repeated point there
