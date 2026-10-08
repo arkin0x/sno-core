@@ -51,11 +51,19 @@ export const FEED_RELAYS: readonly string[] = [
   'wss://nos.lol',
 ]
 
-/** How long a read stays open for a relay that never says it is finished. */
+/** How long a relay's read stays open, from when it is asked, if it never says it is finished. */
 export const READ_DEADLINE_MS = 6000
 
-/** How long a relay gets to connect (and authenticate) before a read goes on without it. */
+/** How long a relay gets to open its socket before a read goes on without it. */
 export const CONNECT_DEADLINE_MS = 3000
+
+/**
+ * How long a relay's auth challenge gets to be answered, on its own clock
+ * after the connect. A local key signs at once; an extension or a bunker may
+ * be a person approving it, and an auth-gated relay (the cyberspace relay
+ * gates reads) skipped for being slow is a feed missing most of its objects.
+ */
+export const AUTH_DEADLINE_MS = 15000
 
 /** The fields of a nostr event this module reads. */
 export interface FeedEvent {
@@ -141,22 +149,27 @@ export interface RelayHandlers {
 export type Subscribe<F = FeedFilter> = (url: string, filter: F, handlers: RelayHandlers) => { close: () => void }
 
 export interface ReadOptions {
-  /** The whole read's deadline. */
+  /** Each relay's read deadline, counted from when it is asked. */
   deadlineMs?: number
-  /** Each relay's deadline to be ready (`prepare`). */
+  /** Each relay's deadline to open (`connect`). */
   connectMs?: number
+  /** Each relay's allowance to authenticate (`auth`), on its own clock after the connect. */
+  authMs?: number
+  /** Open a relay. False (or a rejection, or `connectMs` passing) means it cannot be read now. */
+  connect?: (url: string) => Promise<boolean | void>
   /**
-   * Make a relay ready before it is asked: connect, answer an auth challenge.
-   * False (or a rejection) means it cannot be read now. Bounded by `connectMs`.
+   * Answer the relay's auth challenge, if it sends one. Best effort: a
+   * rejection or `authMs` passing does not stop the read, since a relay that
+   * does not gate reads answers anyway and one that does closes the request.
    */
-  prepare?: (url: string) => Promise<boolean | void>
+  auth?: (url: string) => Promise<unknown>
 }
 
 /** How one relay's part of a read ended. */
 export type RelayEnd = 'eose' | 'closed' | 'unreachable' | 'deadline'
 
 export interface ReadHandle {
-  /** Resolves when every relay has finished or the deadline passed, with how each one ended. */
+  /** Resolves when every relay has finished, with how each one ended. */
   done: Promise<Map<string, RelayEnd>>
   /** Give up now. Safe to call twice. */
   close: () => void
@@ -165,6 +178,10 @@ export interface ReadHandle {
 /**
  * Read one filter from several relays, each on its own, handing each event
  * over as it lands with the relay it came from.
+ *
+ * Each relay runs on its own clocks: `connectMs` to open, `authMs` to answer
+ * a challenge, then `deadlineMs` to finish once asked. No relay waits on
+ * another, and a slow signer does not eat into the read's own time.
  *
  * The same event may arrive from more than one relay; the caller decides
  * what to do about that, because the right answer depends on what it is
@@ -179,7 +196,8 @@ export function readEach<F = FeedFilter>(
 ): ReadHandle {
   const urls = [...new Set(relays)]
   const ends = new Map<string, RelayEnd>()
-  const subs: Array<{ close: () => void }> = []
+  const subs = new Map<string, { close: () => void }>()
+  const timers = new Set<ReturnType<typeof setTimeout>>()
   let finished = false
   let settle: (ends: Map<string, RelayEnd>) => void = () => {}
   const done = new Promise<Map<string, RelayEnd>>((resolve) => { settle = resolve })
@@ -187,48 +205,50 @@ export function readEach<F = FeedFilter>(
   const stop = (): void => {
     if (finished) return
     finished = true
-    clearTimeout(timer)
+    for (const t of timers) clearTimeout(t)
     for (const url of urls) if (!ends.has(url)) ends.set(url, 'deadline')
-    for (const sub of subs) { try { sub.close() } catch { /* already closed */ } }
+    for (const sub of subs.values()) { try { sub.close() } catch { /* already closed */ } }
     settle(ends)
   }
-  const timer = setTimeout(stop, opts.deadlineMs ?? READ_DEADLINE_MS)
-
-  // Every relay has said it has nothing further, or cannot be reached: what
-  // else is out there is not on these relays, so waiting buys nothing.
   const end = (url: string, how: RelayEnd): void => {
     if (finished || ends.has(url)) return
     ends.set(url, how)
+    const sub = subs.get(url)
+    if (sub && how === 'deadline') { try { sub.close() } catch { /* already closed */ } }
     if (ends.size >= urls.length) stop()
   }
   if (urls.length === 0) stop()
 
   for (const url of urls) {
-    void ready(url, opts).then((ok) => {
+    void (async () => {
+      const opened = opts.connect ? await within(opts.connect(url).then((r) => r !== false, () => false), opts.connectMs ?? CONNECT_DEADLINE_MS, false) : true
       if (finished) return
-      if (!ok) { end(url, 'unreachable'); return }
+      if (!opened) { end(url, 'unreachable'); return }
+      if (opts.auth) await within(opts.auth(url).then(() => true, () => true), opts.authMs ?? AUTH_DEADLINE_MS, true)
+      if (finished) return
       try {
-        subs.push(subscribe(url, filter, {
+        subs.set(url, subscribe(url, filter, {
           onevent: (ev) => { if (!finished && !ends.has(url)) onevent(ev, url) },
           oneose: () => end(url, 'eose'),
           onclose: () => end(url, 'closed'),
         }))
       } catch {
         end(url, 'unreachable')
+        return
       }
-    })
+      const t = setTimeout(() => end(url, 'deadline'), opts.deadlineMs ?? READ_DEADLINE_MS)
+      timers.add(t)
+    })()
   }
   return { done, close: stop }
 }
 
-/** Prepare one relay within its deadline; true when it can be asked. */
-async function ready(url: string, opts: ReadOptions): Promise<boolean> {
-  if (!opts.prepare) return true
+/** A promise, or `fallback` once `ms` passes without it. */
+async function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
-  const late = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), opts.connectMs ?? CONNECT_DEADLINE_MS) })
+  const late = new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms) })
   try {
-    const ok = await Promise.race([opts.prepare(url).then((r) => r !== false, () => false), late])
-    return ok
+    return await Promise.race([p, late])
   } finally {
     clearTimeout(timer)
   }
@@ -272,11 +292,15 @@ export interface Feed {
  * A feed that pages as it is asked to.
  *
  * Each relay is followed to its own end. A page asks every relay still open
- * for `pageSize` objects older than that relay's own oldest so far; a relay
- * that answers with fewer than it was asked for, and says it is finished,
- * has nothing older and is not asked again. Following each relay on its own
- * cursor is what keeps a busy relay from pushing a quiet one's objects past
- * the next page's `until`.
+ * for `pageSize` objects from that relay's own oldest second so far, that
+ * second included, so events sharing it past the page's end are not lost; a
+ * page that brings nothing new steps one second past it, and a second such
+ * page means the relay ignores `until`, so it is not asked again. A relay
+ * that answers with fewer than it was asked for and says it is finished, or
+ * runs out its time without a single event, has nothing older. One that
+ * cannot be read at all is asked again next page, and left out after a
+ * second miss. Following each relay on its own cursor is what keeps a busy
+ * relay from pushing a quiet one's objects past the next page's `until`.
  */
 export function createFeed(opts: FeedOptions): Feed {
   const size = opts.pageSize ?? FEED_PAGE
@@ -286,6 +310,17 @@ export function createFeed(opts: FeedOptions): Feed {
   const seenOn = new Map<string, Set<string>>()
   /** Each relay's oldest event so far; absent before its first page. */
   const cursor = new Map<string, number>()
+  /**
+   * Whether a relay's next page asks from its oldest second inclusive (the
+   * usual case: events in that second past the page's end are not lost) or
+   * from the second before (after a page that brought nothing new, the
+   * second is spent).
+   */
+  const inclusive = new Map<string, boolean>()
+  /** Event ids each relay has sent, to tell a new page from a repeat. */
+  const sentBy = new Map<string, Set<string>>()
+  /** How many pages in a row a relay could not be read at all. */
+  const misses = new Map<string, number>()
   const open = new Set(opts.relays)
   let loading = false
   let closed = false
@@ -312,14 +347,18 @@ export function createFeed(opts: FeedOptions): Feed {
     const groups = new Map<number | undefined, string[]>()
     for (const url of open) {
       const c = cursor.get(url)
-      const until = c === undefined ? undefined : c - 1
+      const until = c === undefined ? undefined : inclusive.get(url) === false ? c - 1 : c
       groups.set(until, [...(groups.get(until) ?? []), url])
     }
     const counts = new Map<string, number>()
+    const fresh = new Map<string, number>()
     const reads = [...groups].map(([until, urls]) => {
       const handle = readEach(urls, feedFilter({ authors: opts.authors, until, limit: size }), opts.subscribe, (ev, url) => {
         if (ev.kind !== SNO_KIND) return
         counts.set(url, (counts.get(url) ?? 0) + 1)
+        const mine = sentBy.get(url) ?? new Set<string>()
+        if (!mine.has(ev.id)) { mine.add(ev.id); fresh.set(url, (fresh.get(url) ?? 0) + 1) }
+        sentBy.set(url, mine)
         const seen = seenOn.get(ev.id) ?? new Set<string>()
         seen.add(url)
         seenOn.set(ev.id, seen)
@@ -341,10 +380,29 @@ export function createFeed(opts: FeedOptions): Feed {
     const results = await Promise.all(reads)
     for (const ends of results) {
       for (const [url, how] of ends) {
-        // Finished with less than a page: nothing older on this relay.
-        if (how === 'eose' && (counts.get(url) ?? 0) < size) open.delete(url)
-        // Unreachable or closed with nothing: leave it out of later pages.
-        else if ((how === 'unreachable' || how === 'closed') && !counts.get(url)) open.delete(url)
+        const got = counts.get(url) ?? 0
+        if ((how === 'unreachable' || how === 'closed') && got === 0) {
+          // Could not be read at all: asked again next page, and left out
+          // only after a second miss in a row, so one slow connect on first
+          // load does not cost a relay for the session.
+          const n = (misses.get(url) ?? 0) + 1
+          misses.set(url, n)
+          if (n >= 2) open.delete(url)
+          continue
+        }
+        misses.delete(url)
+        // Finished with less than a page, or ran out its time with nothing at
+        // all (a relay that never sends EOSE): nothing older to ask for.
+        if ((how === 'eose' && got < size) || (how === 'deadline' && got === 0)) { open.delete(url); continue }
+        if ((fresh.get(url) ?? 0) === 0) {
+          // Events, but every one a repeat: either more than a page share the
+          // boundary second, so step past it, or the relay ignores `until`
+          // and would send the same page forever, so stop asking it.
+          if (inclusive.get(url) === false) open.delete(url)
+          else inclusive.set(url, false)
+        } else {
+          inclusive.set(url, true)
+        }
       }
     }
     loading = false

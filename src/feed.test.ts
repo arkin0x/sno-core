@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
+  AUTH_DEADLINE_MS, CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
   objectFromEvent, readCredit, readEach, type FeedEvent, type FeedFilter, type FeedState, type Subscribe,
 } from './feed.js'
 import { toPayload } from './shards.js'
@@ -84,7 +84,7 @@ describe('readEach: each relay on its own', () => {
     const got: string[] = []
     const handle = readEach(['fast', 'hung'], feedFilter(), subscribe, (ev, url) => got.push(`${url}:${ev.id}`), {
       // The hung relay never finishes connecting.
-      prepare: (url) => (url === 'hung' ? new Promise<boolean>(() => {}) : Promise.resolve(true)),
+      connect: (url: string) => (url === 'hung' ? new Promise<boolean>(() => {}) : Promise.resolve(true)),
     })
     await vi.advanceTimersByTimeAsync(60)
     expect(got).toHaveLength(1)
@@ -95,6 +95,28 @@ describe('readEach: each relay on its own', () => {
     const ends = await handle.done
     expect(ends.get('fast')).toBe('eose')
     expect(ends.get('hung')).toBe('unreachable')
+  })
+
+  it('gives auth its own allowance: a signer slower than the connect deadline still gets the relay read', async () => {
+    const { subscribe } = relays({ gated: { events: [obj('a', 10)] } })
+    const got: string[] = []
+    const handle = readEach(['gated'], feedFilter(), subscribe, (ev) => got.push(ev.id), {
+      connect: () => Promise.resolve(true),
+      // An extension or a bunker: a person approving the challenge.
+      auth: () => new Promise((resolve) => setTimeout(resolve, CONNECT_DEADLINE_MS * 2)),
+    })
+    await vi.advanceTimersByTimeAsync(CONNECT_DEADLINE_MS * 2 + 10)
+    expect(got).toHaveLength(1)
+    expect((await handle.done).get('gated')).toBe('eose')
+  })
+
+  it('reads anyway when auth never answers, after its allowance', async () => {
+    const { subscribe } = relays({ open: { events: [obj('a', 10)] } })
+    const got: string[] = []
+    const handle = readEach(['open'], feedFilter(), subscribe, (ev) => got.push(ev.id), { auth: () => new Promise(() => {}) })
+    await vi.advanceTimersByTimeAsync(AUTH_DEADLINE_MS + 10)
+    expect(got).toHaveLength(1)
+    expect((await handle.done).get('open')).toBe('eose')
   })
 
   it('ends at the read deadline for a relay that never says it is finished', async () => {
@@ -133,7 +155,7 @@ describe('createFeed', () => {
     const { subscribe, asked } = relays({ busy: { events: busy }, quiet: { events: quiet } })
     let last: FeedState | null = null
     const feed = createFeed({ relays: ['busy', 'quiet'], subscribe, pageSize: 2, onChange: (s) => { last = s } })
-    for (let i = 0; i < 8 && !feed.state().exhausted; i++) {
+    for (let i = 0; i < 20 && !feed.state().exhausted; i++) {
       const p = feed.more()
       await vi.advanceTimersByTimeAsync(200)
       await p
@@ -141,11 +163,79 @@ describe('createFeed', () => {
     // Every object, none skipped, newest first.
     expect(last!.objects.map((o) => o.d)).toEqual(['b0', 'b1', 'b2', 'b3', 'b4', 'b5', 'q0', 'b6', 'b7', 'b8', 'b9', 'q1', 'q2'])
     expect(last!.exhausted).toBe(true)
-    // Each relay's second page starts below its own oldest: the busy one's at
-    // 99, the quiet one's at 50. One shared cursor (the lowest, 50) would have
-    // sent the busy relay to 49 and skipped b2 to b9.
-    expect(asked.busy[1].until).toBe(98)
-    expect(asked.quiet[1].until).toBe(49)
+    // Each relay's second page starts at its own oldest second: the busy
+    // one's at 99, the quiet one's at 50. One shared cursor (the lowest, 50)
+    // would have sent the busy relay down to 50 and skipped b2 to b9.
+    expect(asked.busy[1].until).toBe(99)
+    expect(asked.quiet[1].until).toBe(50)
+  })
+
+  it('keeps events that share the boundary second with the end of a page', async () => {
+    // Two at 99: the first page ends on one of them.
+    const events = [obj('a', 100), obj('b', 99), obj('c', 99), obj('d', 98)]
+    const { subscribe } = relays({ r: { events } })
+    const feed = createFeed({ relays: ['r'], subscribe, pageSize: 2, onChange: () => {} })
+    for (let i = 0; i < 6 && !feed.state().exhausted; i++) {
+      const p = feed.more()
+      await vi.advanceTimersByTimeAsync(10)
+      await p
+    }
+    expect(feed.state().objects.map((o) => o.d).sort()).toEqual(['a', 'b', 'c', 'd'])
+    expect(feed.state().exhausted).toBe(true)
+  })
+
+  it('stops paging a relay that ignores until, instead of asking it forever', async () => {
+    const events = [obj('a', 100), obj('b', 90)]
+    // A relay that answers the newest page whatever it is asked.
+    const subscribe: Subscribe = (_url, _f, h) => { setTimeout(() => { for (const e of events) h.onevent(e); h.oneose() }, 0); return { close: () => {} } }
+    const feed = createFeed({ relays: ['deaf'], subscribe, pageSize: 2, onChange: () => {} })
+    let pages = 0
+    while (!feed.state().exhausted && pages < 10) {
+      const p = feed.more()
+      await vi.advanceTimersByTimeAsync(10)
+      await p
+      pages += 1
+    }
+    expect(feed.state().exhausted).toBe(true)
+    expect(pages).toBeLessThanOrEqual(3)
+  })
+
+  it('counts a relay that runs out its time with nothing at all as finished', async () => {
+    const { subscribe } = relays({ mute: { events: [], noEose: true } })
+    const feed = createFeed({ relays: ['mute'], subscribe, onChange: () => {} })
+    const p = feed.more()
+    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10)
+    await p
+    expect(feed.state().exhausted).toBe(true)
+  })
+
+  it('asks a relay it could not reach once more, and leaves it out after a second miss', async () => {
+    const { subscribe, asked } = relays({ flaky: { events: [obj('a', 5)] }, ok: { events: Array.from({ length: 4 }, (_, i) => obj(`o${i}`, 50 - i)) } })
+    let tries = 0
+    const connect = (url: string): Promise<boolean> => (url === 'flaky' ? Promise.resolve(++tries > 1) : Promise.resolve(true))
+    const feed = createFeed({ relays: ['flaky', 'ok'], subscribe, pageSize: 2, read: { connect }, onChange: () => {} })
+    let p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    // Missed once: still asked on the next page, and read this time.
+    p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    expect(asked.flaky).toHaveLength(1)
+    expect(feed.state().objects.some((o) => o.d === 'a')).toBe(true)
+  })
+
+  it('leaves out a relay that misses twice in a row', async () => {
+    const { subscribe } = relays({ down: { events: [] } })
+    const feed = createFeed({ relays: ['down'], subscribe, read: { connect: () => Promise.resolve(false) }, onChange: () => {} })
+    let p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    expect(feed.state().exhausted).toBe(false)
+    p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    expect(feed.state().exhausted).toBe(true)
   })
 
   it('stops asking a relay that answered with less than a page', async () => {
