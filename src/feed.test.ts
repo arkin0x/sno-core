@@ -159,7 +159,7 @@ describe('createFeed', () => {
   })
 })
 
-describe('credit for a copy (proposed: the NIP-18 q tag)', () => {
+describe('credit for a copy (the NIP-18 q tag; ruled 2026-10-08)', () => {
   it('writes and reads back the original address, and is not an a or e tag (those mean placements)', () => {
     const tags = creditTags({ address: `33331:${PK}:chair`, relay: 'wss://relay.example' })
     expect(tags).toEqual([['q', `33331:${PK}:chair`, 'wss://relay.example']])
@@ -167,6 +167,14 @@ describe('credit for a copy (proposed: the NIP-18 q tag)', () => {
     const c = readCredit([['d', 'x'], ...tags])
     expect(c).toEqual({ address: `33331:${PK}:chair`, relay: 'wss://relay.example' })
     expect(creditAuthor(c!)).toBe(PK)
+  })
+
+  it('adds the p tag naming the author only for a public remix, never by default', () => {
+    const credit = { address: `33331:${PK}:chair` }
+    expect(creditTags(credit)).toEqual([['q', `33331:${PK}:chair`, '']])
+    expect(creditTags(credit, { notify: true })).toEqual([['q', `33331:${PK}:chair`, ''], ['p', PK]])
+    // An address that does not name a key gets no p.
+    expect(creditTags({ address: '33331:nope:chair' }, { notify: true })).toEqual([['q', '33331:nope:chair', '']])
   })
 
   it('ignores a q tag that quotes something other than an object', () => {

@@ -364,15 +364,20 @@ export function createFeed(opts: FeedOptions): Feed {
  * ------------------------------------------------------------------------ */
 
 /**
- * Whose object a copy was made from.
+ * Whose object a copy was made from (DECK-0003, crediting; ruled by arkinox,
+ * 2026-10-08).
  *
- * PROPOSED, not yet in DECK-0003: a copy carries the NIP-18 quote tag naming
- * the original's address, `["q", "33331:<pubkey>:<d>", "<relay hint>"]`.
- * `q` because it is the standard tag for "this is based on that", it is
- * indexable (a relay can answer "what copies my object"), and it is not `a`
- * or `e`, which on a kind 33331 mean "this object places that one" (§1.10)
- * and would be misread as a placement. The author's pubkey is inside the
- * address, so no `p` is needed to name them.
+ * Every copy and remix carries the NIP-18 quote tag naming the original's
+ * address, `["q", "33331:<pubkey>:<d>", "<relay hint>"]`. `q` because it is
+ * the standard tag for "this is based on that", it is indexable (a relay can
+ * answer "what copies my object"), and it is not `a` or `e`, which on a kind
+ * 33331 mean "this object places that one" (§1.10) and would be misread as a
+ * placement.
+ *
+ * A PUBLIC remix (published as its own kind 33331) also carries
+ * `["p", "<original author>"]`, so the author's clients tell them. A copy
+ * sealed in a bag carries only the `q`: a notification there would point at
+ * a hidden placement.
  */
 export interface Credit {
   /** `33331:<pubkey>:<d>` of the original. */
@@ -381,9 +386,16 @@ export interface Credit {
   relay?: string
 }
 
-/** The tag a copy carries to credit its original. */
-export function creditTags(credit: Credit): string[][] {
-  return [['q', credit.address, credit.relay ?? '']]
+/**
+ * The tags a copy carries to credit its original: the `q` always, and with
+ * `notify` (a public remix only, never a copy sealed in a bag) the `p` that
+ * tells the original's author.
+ */
+export function creditTags(credit: Credit, opts: { notify?: boolean } = {}): string[][] {
+  const tags = [['q', credit.address, credit.relay ?? '']]
+  const author = creditAuthor(credit)
+  if (opts.notify && /^[0-9a-f]{64}$/.test(author)) tags.push(['p', author])
+  return tags
 }
 
 /** The original a copy credits, or null when its tags credit none. */
