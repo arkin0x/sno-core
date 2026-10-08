@@ -1,0 +1,363 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  AUTH_DEADLINE_MS, CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
+  isDeleted, objectFromEvent, readCredit, readEach, type DeletionFilter, type FeedEvent, type FeedFilter, type FeedState, type ReadFilter, type Subscribe,
+} from './feed.js'
+import { toPayload } from './shards.js'
+
+const PK = 'ab'.repeat(32)
+const PK2 = 'cd'.repeat(32)
+
+/** A valid payload (DECK-0003 §1), one point. */
+const payload = (name = 't'): string => JSON.stringify({ v: 2, name, unit: 0, extent: 8, mode: 'points', vertices: [[1, 0, 0]], colors: [229], faces: [] })
+
+let n = 0
+/** A kind 33331 event for an object. */
+function obj(d: string, createdAt: number, pubkey = PK, name = d): FeedEvent {
+  n += 1
+  return { id: `${n}`.padStart(64, '0'), pubkey, created_at: createdAt, kind: SNO_KIND, tags: [['d', d]], content: payload(name) }
+}
+
+/** What a relay holds, answered the way a relay answers a filter: newest first, `limit` of them. */
+function answer(events: FeedEvent[], f: ReadFilter): FeedEvent[] {
+  const tag = (e: FeedEvent, name: string, values?: string[]): boolean => !values || e.tags.some((t) => t[0] === name && values.includes(t[1]))
+  const d = f as DeletionFilter
+  return events
+    .filter((e) => f.kinds.includes(e.kind) && (!f.authors || f.authors.includes(e.pubkey)) && ((f as FeedFilter).until === undefined || e.created_at <= (f as FeedFilter).until!) && tag(e, 'a', d['#a']) && tag(e, 'e', d['#e']))
+    .sort((a, b) => b.created_at - a.created_at)
+    .slice(0, f.limit)
+}
+
+/**
+ * Relays in memory. Each answers after `delay` ms, or never (`hang`), and
+ * records every filter it was asked.
+ */
+function relays(spec: Record<string, { events: FeedEvent[]; delay?: number; hang?: boolean; noEose?: boolean }>): { subscribe: Subscribe; asked: Record<string, FeedFilter[]> } {
+  const asked: Record<string, FeedFilter[]> = {}
+  // Only the pages are recorded; deletion reads (kind 5) are not pages.
+  const subscribe: Subscribe = (url, filter, h) => {
+    const r = spec[url]
+    if (!filter.kinds.includes(5)) (asked[url] ??= []).push(filter as FeedFilter)
+    let closed = false
+    if (!r.hang) {
+      setTimeout(() => {
+        if (closed) return
+        for (const e of answer(r.events, filter)) h.onevent(e)
+        if (!r.noEose) h.oneose()
+      }, r.delay ?? 0)
+    }
+    return { close: () => { closed = true } }
+  }
+  return { subscribe, asked }
+}
+
+beforeEach(() => { vi.useFakeTimers() })
+afterEach(() => { vi.useRealTimers() })
+
+describe('the feed filter', () => {
+  it('asks for kind 33331, paged with until, and never for a tag (strfry refuses more than three)', () => {
+    expect(feedFilter()).toEqual({ kinds: [SNO_KIND], limit: FEED_PAGE })
+    const f = feedFilter({ authors: [PK], until: 100, limit: 10 })
+    expect(f).toEqual({ kinds: [33331], authors: [PK], until: 100, limit: 10 })
+    expect(Object.keys(f).some((k) => k.startsWith('#'))).toBe(false)
+  })
+})
+
+describe('objectFromEvent', () => {
+  it('reads an object, with its address', () => {
+    const o = objectFromEvent(obj('chair', 5))
+    expect(o?.d).toBe('chair')
+    expect(o?.address).toBe(`33331:${PK}:chair`)
+    expect(o?.shard.vertices).toHaveLength(1)
+    expect(o?.event.id).toBe(o?.id)
+  })
+
+  it('refuses what is not an object: another kind, no d, malformed, sealed to a place, empty', () => {
+    expect(objectFromEvent({ ...obj('a', 1), kind: 1 })).toBeNull()
+    expect(objectFromEvent({ ...obj('a', 1), tags: [] })).toBeNull()
+    expect(objectFromEvent({ ...obj('a', 1), content: '{nope' })).toBeNull()
+    expect(objectFromEvent({ ...obj('a', 1), tags: [['d', 'a'], ['encrypted', 'aes-256-gcm', 'x', 'cyberspace:region']] })).toBeNull()
+    expect(objectFromEvent({ ...obj('a', 1), content: JSON.stringify({ v: 2, name: 'e', unit: 0, extent: 8, mode: 'points', vertices: [], colors: [], faces: [] }) })).toBeNull()
+  })
+})
+
+describe('readEach: each relay on its own', () => {
+  it('paints from a fast relay at once, and one hung relay costs only its connect deadline (snocrash #22)', async () => {
+    const { subscribe } = relays({ fast: { events: [obj('a', 10)], delay: 50 }, hung: { events: [] } })
+    const got: string[] = []
+    const handle = readEach(['fast', 'hung'], feedFilter(), subscribe, (ev, url) => got.push(`${url}:${ev.id}`), {
+      // The hung relay never finishes connecting.
+      connect: (url: string) => (url === 'hung' ? new Promise<boolean>(() => {}) : Promise.resolve(true)),
+    })
+    await vi.advanceTimersByTimeAsync(60)
+    expect(got).toHaveLength(1)
+    let finished = false
+    void handle.done.then(() => { finished = true })
+    await vi.advanceTimersByTimeAsync(CONNECT_DEADLINE_MS)
+    expect(finished).toBe(true)
+    const ends = await handle.done
+    expect(ends.get('fast')).toBe('eose')
+    expect(ends.get('hung')).toBe('unreachable')
+  })
+
+  it('gives auth its own allowance: a signer slower than the connect deadline still gets the relay read', async () => {
+    const { subscribe } = relays({ gated: { events: [obj('a', 10)] } })
+    const got: string[] = []
+    const handle = readEach(['gated'], feedFilter(), subscribe, (ev) => got.push(ev.id), {
+      connect: () => Promise.resolve(true),
+      // An extension or a bunker: a person approving the challenge.
+      auth: () => new Promise((resolve) => setTimeout(resolve, CONNECT_DEADLINE_MS * 2)),
+    })
+    await vi.advanceTimersByTimeAsync(CONNECT_DEADLINE_MS * 2 + 10)
+    expect(got).toHaveLength(1)
+    expect((await handle.done).get('gated')).toBe('eose')
+  })
+
+  it('reads anyway when auth never answers, after its allowance', async () => {
+    const { subscribe } = relays({ open: { events: [obj('a', 10)] } })
+    const got: string[] = []
+    const handle = readEach(['open'], feedFilter(), subscribe, (ev) => got.push(ev.id), { auth: () => new Promise(() => {}) })
+    await vi.advanceTimersByTimeAsync(AUTH_DEADLINE_MS + 10)
+    expect(got).toHaveLength(1)
+    expect((await handle.done).get('open')).toBe('eose')
+  })
+
+  it('ends at the read deadline for a relay that never says it is finished', async () => {
+    const { subscribe } = relays({ slow: { events: [obj('a', 1)], noEose: true } })
+    const handle = readEach(['slow'], feedFilter(), subscribe, () => {})
+    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS)
+    expect((await handle.done).get('slow')).toBe('deadline')
+  })
+
+  it('a subscribe that throws counts as unreachable, not as a stuck read', async () => {
+    const handle = readEach(['bad'], feedFilter(), () => { throw new Error('no socket') }, () => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect((await handle.done).get('bad')).toBe('unreachable')
+  })
+})
+
+describe('createFeed', () => {
+  it('keeps the newest event per address, whichever relay sent it and in whatever order', async () => {
+    const older = obj('chair', 10, PK, 'old chair')
+    const newer = obj('chair', 20, PK, 'new chair')
+    const { subscribe } = relays({ r1: { events: [newer], delay: 5 }, r2: { events: [older], delay: 30 } })
+    let last: FeedState | null = null
+    const feed = createFeed({ relays: ['r1', 'r2'], subscribe, onChange: (s) => { last = s } })
+    const p = feed.more()
+    await vi.advanceTimersByTimeAsync(100)
+    await p
+    expect(last!.objects.map((o) => o.shard.name)).toEqual(['new chair'])
+    // Where it was read from, for a reference's relay hint.
+    expect(last!.objects[0].seen).toEqual(['r1'])
+  })
+
+  it('pages each relay on its own cursor, so a busy relay never makes a quiet one skip objects', async () => {
+    // Busy: ten objects at times 100..91. Quiet: three, at 95, 50 and 10.
+    const busy = Array.from({ length: 10 }, (_, i) => obj(`b${i}`, 100 - i))
+    const quiet = [obj('q0', 95, PK2), obj('q1', 50, PK2), obj('q2', 10, PK2)]
+    const { subscribe, asked } = relays({ busy: { events: busy }, quiet: { events: quiet } })
+    let last: FeedState | null = null
+    const feed = createFeed({ relays: ['busy', 'quiet'], subscribe, pageSize: 2, onChange: (s) => { last = s } })
+    for (let i = 0; i < 20 && !feed.state().exhausted; i++) {
+      const p = feed.more()
+      await vi.advanceTimersByTimeAsync(200)
+      await p
+    }
+    // Every object, none skipped, newest first.
+    expect(last!.objects.map((o) => o.d)).toEqual(['b0', 'b1', 'b2', 'b3', 'b4', 'b5', 'q0', 'b6', 'b7', 'b8', 'b9', 'q1', 'q2'])
+    expect(last!.exhausted).toBe(true)
+    // Each relay's second page starts at its own oldest second: the busy
+    // one's at 99, the quiet one's at 50. One shared cursor (the lowest, 50)
+    // would have sent the busy relay down to 50 and skipped b2 to b9.
+    expect(asked.busy[1].until).toBe(99)
+    expect(asked.quiet[1].until).toBe(50)
+  })
+
+  it('keeps events that share the boundary second with the end of a page', async () => {
+    // Two at 99: the first page ends on one of them.
+    const events = [obj('a', 100), obj('b', 99), obj('c', 99), obj('d', 98)]
+    const { subscribe } = relays({ r: { events } })
+    const feed = createFeed({ relays: ['r'], subscribe, pageSize: 2, onChange: () => {} })
+    for (let i = 0; i < 6 && !feed.state().exhausted; i++) {
+      const p = feed.more()
+      await vi.advanceTimersByTimeAsync(10)
+      await p
+    }
+    expect(feed.state().objects.map((o) => o.d).sort()).toEqual(['a', 'b', 'c', 'd'])
+    expect(feed.state().exhausted).toBe(true)
+  })
+
+  it('stops paging a relay that ignores until, instead of asking it forever', async () => {
+    const events = [obj('a', 100), obj('b', 90)]
+    // A relay that answers the newest page whatever it is asked.
+    const subscribe: Subscribe = (_url, _f, h) => { setTimeout(() => { for (const e of events) h.onevent(e); h.oneose() }, 0); return { close: () => {} } }
+    const feed = createFeed({ relays: ['deaf'], subscribe, pageSize: 2, onChange: () => {} })
+    let pages = 0
+    while (!feed.state().exhausted && pages < 10) {
+      const p = feed.more()
+      await vi.advanceTimersByTimeAsync(10)
+      await p
+      pages += 1
+    }
+    expect(feed.state().exhausted).toBe(true)
+    expect(pages).toBeLessThanOrEqual(3)
+  })
+
+  it('a relay that runs out its time with nothing is a miss, not finished: it ends after two', async () => {
+    const { subscribe } = relays({ mute: { events: [], noEose: true } })
+    const feed = createFeed({ relays: ['mute'], subscribe, onChange: () => {} })
+    let p = feed.more()
+    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10)
+    await p
+    expect(feed.state().exhausted).toBe(false)
+    p = feed.more()
+    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10)
+    await p
+    expect(feed.state().exhausted).toBe(true)
+  })
+
+  it('a relay that first answers after the read deadline gets its objects on the next page (verification review)', async () => {
+    let asks = 0
+    const events = Array.from({ length: 5 }, (_, i) => obj(`s${i}`, 1000 - i))
+    // Cold: the first answer comes 7 s after the ask; warm after that.
+    const subscribe: Subscribe = (_url, f, h) => {
+      const late = f.kinds.includes(5) ? 0 : asks++ === 0 ? 7000 : 50
+      const t = setTimeout(() => { for (const e of answer(events, f)) h.onevent(e); h.oneose() }, late)
+      return { close: () => clearTimeout(t) }
+    }
+    const feed = createFeed({ relays: ['slow'], subscribe, onChange: () => {} })
+    let p = feed.more()
+    await vi.advanceTimersByTimeAsync(8000)
+    await p
+    expect(feed.state().exhausted).toBe(false)
+    p = feed.more()
+    await vi.advanceTimersByTimeAsync(1000)
+    await p
+    expect(feed.state().objects).toHaveLength(5)
+  })
+
+  it('a signer that takes longer than auth plus the read gets the relay read on the next page, auth now cached', async () => {
+    let authed = false
+    const auth = (): Promise<void> => (authed ? Promise.resolve() : new Promise((r) => setTimeout(() => { authed = true; r() }, 25000)))
+    const events = Array.from({ length: 3 }, (_, i) => obj(`g${i}`, 1000 - i))
+    // A gated relay answers only once authenticated.
+    const subscribe: Subscribe = (_url, f, h) => {
+      let closed = false
+      const go = (): void => { if (!closed) { for (const e of answer(events, f)) h.onevent(e); h.oneose() } }
+      const iv = setInterval(() => { if (authed) { clearInterval(iv); go() } }, 100)
+      return { close: () => { closed = true; clearInterval(iv) } }
+    }
+    const feed = createFeed({ relays: ['gated'], subscribe, read: { auth }, onChange: () => {} })
+    let p = feed.more()
+    await vi.advanceTimersByTimeAsync(30000)
+    await p
+    expect(feed.state().exhausted).toBe(false)
+    p = feed.more()
+    await vi.advanceTimersByTimeAsync(1000)
+    await p
+    expect(feed.state().objects).toHaveLength(3)
+  })
+
+  it('asks a relay it could not reach once more, and leaves it out after a second miss', async () => {
+    const { subscribe, asked } = relays({ flaky: { events: [obj('a', 5)] }, ok: { events: Array.from({ length: 4 }, (_, i) => obj(`o${i}`, 50 - i)) } })
+    let tries = 0
+    const connect = (url: string): Promise<boolean> => (url === 'flaky' ? Promise.resolve(++tries > 1) : Promise.resolve(true))
+    const feed = createFeed({ relays: ['flaky', 'ok'], subscribe, pageSize: 2, read: { connect }, onChange: () => {} })
+    let p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    // Missed once: still asked on the next page, and read this time.
+    p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    expect(asked.flaky).toHaveLength(1)
+    expect(feed.state().objects.some((o) => o.d === 'a')).toBe(true)
+  })
+
+  it('leaves out a relay that misses twice in a row', async () => {
+    const { subscribe } = relays({ down: { events: [] } })
+    const feed = createFeed({ relays: ['down'], subscribe, read: { connect: () => Promise.resolve(false) }, onChange: () => {} })
+    let p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    expect(feed.state().exhausted).toBe(false)
+    p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    expect(feed.state().exhausted).toBe(true)
+  })
+
+  it('stops asking a relay that answered with less than a page', async () => {
+    const { subscribe, asked } = relays({ r: { events: [obj('a', 5)] } })
+    const feed = createFeed({ relays: ['r'], subscribe, pageSize: 3, onChange: () => {} })
+    const p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    expect(feed.state().exhausted).toBe(true)
+    await feed.more()
+    expect(asked.r).toHaveLength(1)
+  })
+})
+
+describe('deletions (NIP-09)', () => {
+  const del = (pubkey: string, createdAt: number, tags: string[][]): FeedEvent => { n += 1; return { id: `d${n}`.padStart(64, '0'), pubkey, created_at: createdAt, kind: 5, tags, content: '' } }
+
+  it('isDeleted: by id, or by address at or after the event; never by someone else', () => {
+    const o = objectFromEvent(obj('lamp', 100))!
+    expect(isDeleted(o, [del(PK, 50, [['e', o.id]])])).toBe(true)
+    expect(isDeleted(o, [del(PK, 100, [['a', o.address]])])).toBe(true)
+    // An address deletion older than this version does not remove it.
+    expect(isDeleted(o, [del(PK, 99, [['a', o.address]])])).toBe(false)
+    expect(isDeleted(o, [del(PK2, 200, [['e', o.id], ['a', o.address]])])).toBe(false)
+  })
+
+  it('the feed hides an object its author deleted, reading deletions with one tag filter each', async () => {
+    const kept = obj('kept', 100)
+    const gone = obj('gone', 90)
+    const byAddress = obj('old', 80)
+    const events = [kept, gone, byAddress, del(PK, 95, [['e', gone.id]]), del(PK, 85, [['a', `33331:${PK}:old`]])]
+    const seen: ReadFilter[] = []
+    const subscribe: Subscribe = (_url, f, h) => { seen.push(f); setTimeout(() => { for (const e of answer(events, f)) h.onevent(e); h.oneose() }, 0); return { close: () => {} } }
+    const feed = createFeed({ relays: ['r'], subscribe, onChange: () => {} })
+    const p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    expect(feed.state().objects.map((o) => o.d)).toEqual(['kept'])
+    for (const f of seen) expect(Object.keys(f).filter((k) => k.startsWith('#')).length).toBeLessThanOrEqual(1)
+  })
+})
+
+describe('credit for a copy (the NIP-18 q tag; ruled 2026-10-08)', () => {
+  it('writes and reads back the original address, and is not an a or e tag (those mean placements)', () => {
+    const tags = creditTags({ address: `33331:${PK}:chair`, relay: 'wss://relay.example' })
+    expect(tags).toEqual([['q', `33331:${PK}:chair`, 'wss://relay.example']])
+    expect(tags.some((t) => t[0] === 'a' || t[0] === 'e')).toBe(false)
+    const c = readCredit([['d', 'x'], ...tags])
+    expect(c).toEqual({ address: `33331:${PK}:chair`, relay: 'wss://relay.example' })
+    expect(creditAuthor(c!)).toBe(PK)
+  })
+
+  it('adds the p tag naming the author only for a public remix, never by default', () => {
+    const credit = { address: `33331:${PK}:chair` }
+    expect(creditTags(credit)).toEqual([['q', `33331:${PK}:chair`, '']])
+    expect(creditTags(credit, { notify: true })).toEqual([['q', `33331:${PK}:chair`, ''], ['p', PK]])
+    // An address that does not name a key gets no p.
+    expect(creditTags({ address: '33331:nope:chair' }, { notify: true })).toEqual([['q', '33331:nope:chair', '']])
+  })
+
+  it('a remixed model remembers its credit beside the format, and the payload never carries it', () => {
+    const model = objectFromEvent(obj('chair', 1))!.shard
+    expect(creditOf(model)).toBeUndefined()
+    const remix = withCredit(model, { address: `33331:${PK}:chair` })
+    expect(creditOf(remix)).toEqual({ address: `33331:${PK}:chair` })
+    // An edit that spreads the model keeps it.
+    expect(creditOf({ ...remix, name: 'my chair' })).toEqual({ address: `33331:${PK}:chair` })
+    // The wire never sees it: the credit is a tag, not a payload field.
+    expect(JSON.stringify(toPayload(remix))).not.toContain('credit')
+  })
+
+  it('ignores a q tag that quotes something other than an object', () => {
+    expect(readCredit([['q', 'ff'.repeat(32)]])).toBeNull()
+    expect(readCredit([])).toBeNull()
+  })
+})

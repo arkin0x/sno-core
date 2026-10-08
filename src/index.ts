@@ -7,6 +7,7 @@
  */
 
 export * from './clip.js'
+export * from './feed.js'
 // Named rather than starred: hsv.ts and snoPalette.ts each define `Rgb`, the
 // same three numbers, and neither should have to import the other to say so.
 // The format's own is the one this barrel carries.
