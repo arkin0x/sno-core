@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AUTH_DEADLINE_MS, CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
-  objectFromEvent, readCredit, readEach, type FeedEvent, type FeedFilter, type FeedState, type Subscribe,
+  isDeleted, objectFromEvent, readCredit, readEach, type DeletionFilter, type FeedEvent, type FeedFilter, type FeedState, type ReadFilter, type Subscribe,
 } from './feed.js'
 import { toPayload } from './shards.js'
 
@@ -19,9 +19,11 @@ function obj(d: string, createdAt: number, pubkey = PK, name = d): FeedEvent {
 }
 
 /** What a relay holds, answered the way a relay answers a filter: newest first, `limit` of them. */
-function answer(events: FeedEvent[], f: FeedFilter): FeedEvent[] {
+function answer(events: FeedEvent[], f: ReadFilter): FeedEvent[] {
+  const tag = (e: FeedEvent, name: string, values?: string[]): boolean => !values || e.tags.some((t) => t[0] === name && values.includes(t[1]))
+  const d = f as DeletionFilter
   return events
-    .filter((e) => f.kinds.includes(e.kind) && (!f.authors || f.authors.includes(e.pubkey)) && (f.until === undefined || e.created_at <= f.until))
+    .filter((e) => f.kinds.includes(e.kind) && (!f.authors || f.authors.includes(e.pubkey)) && ((f as FeedFilter).until === undefined || e.created_at <= (f as FeedFilter).until!) && tag(e, 'a', d['#a']) && tag(e, 'e', d['#e']))
     .sort((a, b) => b.created_at - a.created_at)
     .slice(0, f.limit)
 }
@@ -32,9 +34,10 @@ function answer(events: FeedEvent[], f: FeedFilter): FeedEvent[] {
  */
 function relays(spec: Record<string, { events: FeedEvent[]; delay?: number; hang?: boolean; noEose?: boolean }>): { subscribe: Subscribe; asked: Record<string, FeedFilter[]> } {
   const asked: Record<string, FeedFilter[]> = {}
+  // Only the pages are recorded; deletion reads (kind 5) are not pages.
   const subscribe: Subscribe = (url, filter, h) => {
     const r = spec[url]
-    ;(asked[url] ??= []).push(filter)
+    if (!filter.kinds.includes(5)) (asked[url] ??= []).push(filter as FeedFilter)
     let closed = false
     if (!r.hang) {
       setTimeout(() => {
@@ -200,13 +203,59 @@ describe('createFeed', () => {
     expect(pages).toBeLessThanOrEqual(3)
   })
 
-  it('counts a relay that runs out its time with nothing at all as finished', async () => {
+  it('a relay that runs out its time with nothing is a miss, not finished: it ends after two', async () => {
     const { subscribe } = relays({ mute: { events: [], noEose: true } })
     const feed = createFeed({ relays: ['mute'], subscribe, onChange: () => {} })
-    const p = feed.more()
+    let p = feed.more()
+    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10)
+    await p
+    expect(feed.state().exhausted).toBe(false)
+    p = feed.more()
     await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10)
     await p
     expect(feed.state().exhausted).toBe(true)
+  })
+
+  it('a relay that first answers after the read deadline gets its objects on the next page (verification review)', async () => {
+    let asks = 0
+    const events = Array.from({ length: 5 }, (_, i) => obj(`s${i}`, 1000 - i))
+    // Cold: the first answer comes 7 s after the ask; warm after that.
+    const subscribe: Subscribe = (_url, f, h) => {
+      const late = f.kinds.includes(5) ? 0 : asks++ === 0 ? 7000 : 50
+      const t = setTimeout(() => { for (const e of answer(events, f)) h.onevent(e); h.oneose() }, late)
+      return { close: () => clearTimeout(t) }
+    }
+    const feed = createFeed({ relays: ['slow'], subscribe, onChange: () => {} })
+    let p = feed.more()
+    await vi.advanceTimersByTimeAsync(8000)
+    await p
+    expect(feed.state().exhausted).toBe(false)
+    p = feed.more()
+    await vi.advanceTimersByTimeAsync(1000)
+    await p
+    expect(feed.state().objects).toHaveLength(5)
+  })
+
+  it('a signer that takes longer than auth plus the read gets the relay read on the next page, auth now cached', async () => {
+    let authed = false
+    const auth = (): Promise<void> => (authed ? Promise.resolve() : new Promise((r) => setTimeout(() => { authed = true; r() }, 25000)))
+    const events = Array.from({ length: 3 }, (_, i) => obj(`g${i}`, 1000 - i))
+    // A gated relay answers only once authenticated.
+    const subscribe: Subscribe = (_url, f, h) => {
+      let closed = false
+      const go = (): void => { if (!closed) { for (const e of answer(events, f)) h.onevent(e); h.oneose() } }
+      const iv = setInterval(() => { if (authed) { clearInterval(iv); go() } }, 100)
+      return { close: () => { closed = true; clearInterval(iv) } }
+    }
+    const feed = createFeed({ relays: ['gated'], subscribe, read: { auth }, onChange: () => {} })
+    let p = feed.more()
+    await vi.advanceTimersByTimeAsync(30000)
+    await p
+    expect(feed.state().exhausted).toBe(false)
+    p = feed.more()
+    await vi.advanceTimersByTimeAsync(1000)
+    await p
+    expect(feed.state().objects).toHaveLength(3)
   })
 
   it('asks a relay it could not reach once more, and leaves it out after a second miss', async () => {
@@ -247,6 +296,34 @@ describe('createFeed', () => {
     expect(feed.state().exhausted).toBe(true)
     await feed.more()
     expect(asked.r).toHaveLength(1)
+  })
+})
+
+describe('deletions (NIP-09)', () => {
+  const del = (pubkey: string, createdAt: number, tags: string[][]): FeedEvent => { n += 1; return { id: `d${n}`.padStart(64, '0'), pubkey, created_at: createdAt, kind: 5, tags, content: '' } }
+
+  it('isDeleted: by id, or by address at or after the event; never by someone else', () => {
+    const o = objectFromEvent(obj('lamp', 100))!
+    expect(isDeleted(o, [del(PK, 50, [['e', o.id]])])).toBe(true)
+    expect(isDeleted(o, [del(PK, 100, [['a', o.address]])])).toBe(true)
+    // An address deletion older than this version does not remove it.
+    expect(isDeleted(o, [del(PK, 99, [['a', o.address]])])).toBe(false)
+    expect(isDeleted(o, [del(PK2, 200, [['e', o.id], ['a', o.address]])])).toBe(false)
+  })
+
+  it('the feed hides an object its author deleted, reading deletions with one tag filter each', async () => {
+    const kept = obj('kept', 100)
+    const gone = obj('gone', 90)
+    const byAddress = obj('old', 80)
+    const events = [kept, gone, byAddress, del(PK, 95, [['e', gone.id]]), del(PK, 85, [['a', `33331:${PK}:old`]])]
+    const seen: ReadFilter[] = []
+    const subscribe: Subscribe = (_url, f, h) => { seen.push(f); setTimeout(() => { for (const e of answer(events, f)) h.onevent(e); h.oneose() }, 0); return { close: () => {} } }
+    const feed = createFeed({ relays: ['r'], subscribe, onChange: () => {} })
+    const p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    expect(feed.state().objects.map((o) => o.d)).toEqual(['kept'])
+    for (const f of seen) expect(Object.keys(f).filter((k) => k.startsWith('#')).length).toBeLessThanOrEqual(1)
   })
 })
 

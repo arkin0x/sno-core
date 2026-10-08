@@ -22,6 +22,9 @@
  * - **Paging:** `createFeed`, a page at a time as the reader scrolls, each
  *   relay followed to its own end so a dense relay cannot make a sparse one
  *   skip events.
+ * - **Deletions:** after each page, its authors' kind 5 deletions of what it
+ *   brought, by address and by id (one tag filter each), and a deleted
+ *   object is not shown (NIP-09, `isDeleted`).
  *
  * Like parts.ts, this package does no networking: the client passes in how
  * to subscribe to one relay, and keeps its own pool, auth and relay list.
@@ -99,6 +102,43 @@ export interface FeedFilter {
   limit: number
 }
 
+/**
+ * A read of authors' deletions (NIP-09, kind 5) of the objects a page
+ * brought: one tag filter each (`#a` or `#e`), well inside strfry's three.
+ */
+export interface DeletionFilter {
+  kinds: number[]
+  authors: string[]
+  '#a'?: string[]
+  '#e'?: string[]
+  limit: number
+}
+
+/** What a feed read asks: a page of objects, or the deletions of some. */
+export type ReadFilter = FeedFilter | DeletionFilter
+
+/** The two deletion reads for these objects: by address, and by event id. */
+export function deletionFilters(objects: readonly Pick<FeedObject, 'pubkey' | 'address' | 'id'>[]): DeletionFilter[] {
+  if (objects.length === 0) return []
+  const authors = [...new Set(objects.map((o) => o.pubkey))]
+  const limit = Math.max(50, objects.length * 2)
+  return [
+    { kinds: [5], authors, '#a': [...new Set(objects.map((o) => o.address))], limit },
+    { kinds: [5], authors, '#e': [...new Set(objects.map((o) => o.id))], limit },
+  ]
+}
+
+/**
+ * Whether an author deleted an object (NIP-09): a kind 5 by the object's own
+ * author naming its event id, or naming its address at or after the event's
+ * time (an address deletion removes every version up to that moment). A
+ * deletion by anyone else deletes nothing.
+ */
+export function isDeleted(o: Pick<FeedObject, 'pubkey' | 'address' | 'id' | 'createdAt'>, deletions: readonly FeedEvent[]): boolean {
+  return deletions.some((d) => d.kind === 5 && d.pubkey === o.pubkey && d.tags.some((t) =>
+    (t[0] === 'e' && t[1] === o.id) || (t[0] === 'a' && t[1] === o.address && d.created_at >= o.createdAt)))
+}
+
 /** The filter for one page of the feed. No tag filters, ever (see the header). */
 export function feedFilter(opts: { authors?: string[]; until?: number; limit?: number } = {}): FeedFilter {
   const filter: FeedFilter = { kinds: [SNO_KIND], limit: opts.limit ?? FEED_PAGE }
@@ -146,7 +186,7 @@ export interface RelayHandlers {
  * `#d` lookup, profiles) through the same per-relay reader; the feed's own
  * reads use FeedFilter.
  */
-export type Subscribe<F = FeedFilter> = (url: string, filter: F, handlers: RelayHandlers) => { close: () => void }
+export type Subscribe<F = ReadFilter> = (url: string, filter: F, handlers: RelayHandlers) => { close: () => void }
 
 export interface ReadOptions {
   /** Each relay's read deadline, counted from when it is asked. */
@@ -187,7 +227,7 @@ export interface ReadHandle {
  * what to do about that, because the right answer depends on what it is
  * collecting.
  */
-export function readEach<F = FeedFilter>(
+export function readEach<F = ReadFilter>(
   relays: readonly string[],
   filter: F,
   subscribe: Subscribe<F>,
@@ -269,7 +309,8 @@ export interface FeedState {
 
 export interface FeedOptions {
   relays: readonly string[]
-  subscribe: Subscribe
+  /** Pages of objects (FeedFilter, no tag filters) and their deletions (DeletionFilter, one each). */
+  subscribe: Subscribe<ReadFilter>
   /** Only these authors' objects (a MINE view); everyone's when absent. */
   authors?: string[]
   pageSize?: number
@@ -296,10 +337,10 @@ export interface Feed {
  * second included, so events sharing it past the page's end are not lost; a
  * page that brings nothing new steps one second past it, and a second such
  * page means the relay ignores `until`, so it is not asked again. A relay
- * that answers with fewer than it was asked for and says it is finished, or
- * runs out its time without a single event, has nothing older. One that
- * cannot be read at all is asked again next page, and left out after a
- * second miss. Following each relay on its own cursor is what keeps a busy
+ * that answers with fewer than it was asked for and says it is finished has
+ * nothing older. One that cannot be read at all, or runs out its time
+ * without a single event, is asked again next page, and left out after a
+ * second miss in a row. Following each relay on its own cursor is what keeps a busy
  * relay from pushing a quiet one's objects past the next page's `until`.
  */
 export function createFeed(opts: FeedOptions): Feed {
@@ -321,6 +362,9 @@ export function createFeed(opts: FeedOptions): Feed {
   const sentBy = new Map<string, Set<string>>()
   /** How many pages in a row a relay could not be read at all. */
   const misses = new Map<string, number>()
+  /** Authors' deletions (NIP-09) of objects read so far, and the events already checked for them. */
+  const deletions: FeedEvent[] = []
+  const checked = new Set<string>()
   const open = new Set(opts.relays)
   let loading = false
   let closed = false
@@ -332,7 +376,8 @@ export function createFeed(opts: FeedOptions): Feed {
     for (const ev of newest.values()) {
       if (!parsed.has(ev.id)) parsed.set(ev.id, objectFromEvent(ev))
       const o = parsed.get(ev.id)
-      if (o) out.push({ ...o, seen: [...(seenOn.get(ev.id) ?? [])] })
+      // An object its author deleted is not shown.
+      if (o && !isDeleted(o, deletions)) out.push({ ...o, seen: [...(seenOn.get(ev.id) ?? [])] })
     }
     return out.sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : 1))
   }
@@ -381,19 +426,21 @@ export function createFeed(opts: FeedOptions): Feed {
     for (const ends of results) {
       for (const [url, how] of ends) {
         const got = counts.get(url) ?? 0
-        if ((how === 'unreachable' || how === 'closed') && got === 0) {
-          // Could not be read at all: asked again next page, and left out
-          // only after a second miss in a row, so one slow connect on first
-          // load does not cost a relay for the session.
+        if ((how === 'unreachable' || how === 'closed' || how === 'deadline') && got === 0) {
+          // Could not be read at all, or ran out its time with nothing: asked
+          // again next page, and left out only after a second miss in a row.
+          // A slow connect, a signer prompt longer than the read, or a relay
+          // that first answers after the deadline is not "nothing older"; a
+          // second page (with the auth now cached) gets its objects. A relay
+          // that never sends EOSE still ends after two (verification review).
           const n = (misses.get(url) ?? 0) + 1
           misses.set(url, n)
           if (n >= 2) open.delete(url)
           continue
         }
         misses.delete(url)
-        // Finished with less than a page, or ran out its time with nothing at
-        // all (a relay that never sends EOSE): nothing older to ask for.
-        if ((how === 'eose' && got < size) || (how === 'deadline' && got === 0)) { open.delete(url); continue }
+        // Finished with less than a page: nothing older to ask for.
+        if (how === 'eose' && got < size) { open.delete(url); continue }
         if ((fresh.get(url) ?? 0) === 0) {
           // Events, but every one a repeat: either more than a page share the
           // boundary second, so step past it, or the relay ignores `until`
@@ -404,6 +451,24 @@ export function createFeed(opts: FeedOptions): Feed {
           inclusive.set(url, true)
         }
       }
+    }
+    // The authors' deletions of what this page brought, from the relays that
+    // answered it: an object deleted by its author is hidden (NIP-09).
+    const answered = [...new Set(results.flatMap((ends) => [...ends].filter(([url, how]) => how === 'eose' || (counts.get(url) ?? 0) > 0).map(([url]) => url)))]
+    const unchecked: FeedObject[] = []
+    for (const ev of newest.values()) {
+      if (checked.has(ev.id)) continue
+      checked.add(ev.id)
+      const o = parsed.get(ev.id) ?? objectFromEvent(ev)
+      if (o) unchecked.push(o)
+    }
+    if (answered.length > 0 && unchecked.length > 0 && !closed) {
+      const reads = deletionFilters(unchecked).map((f) => {
+        const handle = readEach<ReadFilter>(answered, f, opts.subscribe, (ev) => { if (ev.kind === 5) deletions.push(ev) }, opts.read)
+        reading.add(handle)
+        return handle.done.finally(() => { reading.delete(handle) })
+      })
+      await Promise.all(reads)
     }
     loading = false
     clearTimeout(batch)
