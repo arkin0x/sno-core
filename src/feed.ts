@@ -409,3 +409,19 @@ export function readCredit(tags: readonly string[][]): Credit | null {
 export function creditAuthor(credit: Credit): string {
   return credit.address.split(':')[1] ?? ''
 }
+
+/**
+ * A model made from someone else's object (a REMIX) remembers it: kept on the
+ * stored model beside the format's fields, never in the payload, and written
+ * with `creditTags` by whatever the model goes out as (a copy in a bag: the
+ * `q`; a public remix: the `q` and the `p`). Both clients keep their models
+ * as JSON and edit them by spreading, so the field survives edits and reloads.
+ */
+export function withCredit(model: ShardModel, credit: Credit): ShardModel {
+  return { ...model, credit } as ShardModel
+}
+
+/** Whose object a model was made from, or undefined for an original. */
+export function creditOf(model: ShardModel): Credit | undefined {
+  return (model as ShardModel & { credit?: Credit }).credit
+}

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditTags, feedFilter,
+  CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
   objectFromEvent, readCredit, readEach, type FeedEvent, type FeedFilter, type FeedState, type Subscribe,
 } from './feed.js'
+import { toPayload } from './shards.js'
 
 const PK = 'ab'.repeat(32)
 const PK2 = 'cd'.repeat(32)
@@ -175,6 +176,17 @@ describe('credit for a copy (the NIP-18 q tag; ruled 2026-10-08)', () => {
     expect(creditTags(credit, { notify: true })).toEqual([['q', `33331:${PK}:chair`, ''], ['p', PK]])
     // An address that does not name a key gets no p.
     expect(creditTags({ address: '33331:nope:chair' }, { notify: true })).toEqual([['q', '33331:nope:chair', '']])
+  })
+
+  it('a remixed model remembers its credit beside the format, and the payload never carries it', () => {
+    const model = objectFromEvent(obj('chair', 1))!.shard
+    expect(creditOf(model)).toBeUndefined()
+    const remix = withCredit(model, { address: `33331:${PK}:chair` })
+    expect(creditOf(remix)).toEqual({ address: `33331:${PK}:chair` })
+    // An edit that spreads the model keeps it.
+    expect(creditOf({ ...remix, name: 'my chair' })).toEqual({ address: `33331:${PK}:chair` })
+    // The wire never sees it: the credit is a tag, not a payload field.
+    expect(JSON.stringify(toPayload(remix))).not.toContain('credit')
   })
 
   it('ignores a q tag that quotes something other than an object', () => {
