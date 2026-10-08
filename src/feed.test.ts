@@ -65,6 +65,7 @@ describe('objectFromEvent', () => {
     expect(o?.d).toBe('chair')
     expect(o?.address).toBe(`33331:${PK}:chair`)
     expect(o?.shard.vertices).toHaveLength(1)
+    expect(o?.event.id).toBe(o?.id)
   })
 
   it('refuses what is not an object: another kind, no d, malformed, sealed to a place, empty', () => {

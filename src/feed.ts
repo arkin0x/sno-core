@@ -77,6 +77,8 @@ export interface FeedObject {
   /** `33331:<pubkey>:<d>`, the address an `a` tag names. */
   address: string
   shard: ShardModel
+  /** The event it was read from, as the relay sent it: what a client keeps, republishes or references. */
+  event: FeedEvent
 }
 
 /** A relay filter (NIP-01), as narrow as a feed needs. */
@@ -112,7 +114,7 @@ export function objectFromEvent(ev: FeedEvent): FeedObject | null {
   try { shard = fromPayload(JSON.parse(ev.content), `${ev.pubkey}:${d}`) } catch { return null }
   // An object may be nothing but the arrangement of others (§1.9 rule 13).
   if (!shard || (shard.vertices.length === 0 && !shard.parts?.length)) return null
-  return { id: ev.id, pubkey: ev.pubkey, createdAt: ev.created_at, d, address: objectAddress(ev.pubkey, d), shard }
+  return { id: ev.id, pubkey: ev.pubkey, createdAt: ev.created_at, d, address: objectAddress(ev.pubkey, d), shard, event: ev }
 }
 
 /* --------------------------------------------------------------------------
