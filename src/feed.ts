@@ -79,6 +79,8 @@ export interface FeedObject {
   shard: ShardModel
   /** The event it was read from, as the relay sent it: what a client keeps, republishes or references. */
   event: FeedEvent
+  /** The relays it was read from (createFeed), for a reference's relay hint. */
+  seen?: string[]
 }
 
 /** A relay filter (NIP-01), as narrow as a feed needs. */
@@ -275,6 +277,8 @@ export function createFeed(opts: FeedOptions): Feed {
   const size = opts.pageSize ?? FEED_PAGE
   const newest = new Map<string, FeedEvent>()
   const parsed = new Map<string, FeedObject | null>()
+  /** Which relays sent each event. */
+  const seenOn = new Map<string, Set<string>>()
   /** Each relay's oldest event so far; absent before its first page. */
   const cursor = new Map<string, number>()
   const open = new Set(opts.relays)
@@ -288,7 +292,7 @@ export function createFeed(opts: FeedOptions): Feed {
     for (const ev of newest.values()) {
       if (!parsed.has(ev.id)) parsed.set(ev.id, objectFromEvent(ev))
       const o = parsed.get(ev.id)
-      if (o) out.push(o)
+      if (o) out.push({ ...o, seen: [...(seenOn.get(ev.id) ?? [])] })
     }
     return out.sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : 1))
   }
@@ -311,6 +315,9 @@ export function createFeed(opts: FeedOptions): Feed {
       const handle = readEach(urls, feedFilter({ authors: opts.authors, until, limit: size }), opts.subscribe, (ev, url) => {
         if (ev.kind !== SNO_KIND) return
         counts.set(url, (counts.get(url) ?? 0) + 1)
+        const seen = seenOn.get(ev.id) ?? new Set<string>()
+        seen.add(url)
+        seenOn.set(ev.id, seen)
         const prevOldest = cursor.get(url)
         if (prevOldest === undefined || ev.created_at < prevOldest) cursor.set(url, ev.created_at)
         const d = ev.tags.find((t) => t[0] === 'd')?.[1]

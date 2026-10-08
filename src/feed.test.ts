@@ -121,6 +121,8 @@ describe('createFeed', () => {
     await vi.advanceTimersByTimeAsync(100)
     await p
     expect(last!.objects.map((o) => o.shard.name)).toEqual(['new chair'])
+    // Where it was read from, for a reference's relay hint.
+    expect(last!.objects[0].seen).toEqual(['r1'])
   })
 
   it('pages each relay on its own cursor, so a busy relay never makes a quiet one skip objects', async () => {
