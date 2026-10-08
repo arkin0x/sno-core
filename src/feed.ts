@@ -132,8 +132,13 @@ export interface RelayHandlers {
   onclose: (reason?: string) => void
 }
 
-/** How a client subscribes to one relay: its pool, its auth. Returns how to close it. */
-export type Subscribe = (url: string, filter: FeedFilter, handlers: RelayHandlers) => { close: () => void }
+/**
+ * How a client subscribes to one relay: its pool, its auth. Returns how to
+ * close it. Generic over the filter, so a client can read other filters (a
+ * `#d` lookup, profiles) through the same per-relay reader; the feed's own
+ * reads use FeedFilter.
+ */
+export type Subscribe<F = FeedFilter> = (url: string, filter: F, handlers: RelayHandlers) => { close: () => void }
 
 export interface ReadOptions {
   /** The whole read's deadline. */
@@ -165,10 +170,10 @@ export interface ReadHandle {
  * what to do about that, because the right answer depends on what it is
  * collecting.
  */
-export function readEach(
+export function readEach<F = FeedFilter>(
   relays: readonly string[],
-  filter: FeedFilter,
-  subscribe: Subscribe,
+  filter: F,
+  subscribe: Subscribe<F>,
   onevent: (ev: FeedEvent, url: string) => void,
   opts: ReadOptions = {},
 ): ReadHandle {
