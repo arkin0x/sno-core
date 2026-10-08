@@ -36,6 +36,7 @@ Section numbers in the comments here refer to that deck.
 | `hsv` | Hue, saturation and brightness |
 | `scale` | A gibson count as a human distance, and the size of a cell |
 | `pose` | The two pose operations the format owns: `wrapSpin` and `applyPose` |
+| `feed` | Published objects read from relays (the Shard Feed): the filter (never a tag filter), each relay read on its own with deadlines, newest per address, paging each relay to its own end, and the proposed credit tag for a copy. Networking is the client's, passed in |
 
 ## What is deliberately not in it
 
