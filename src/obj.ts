@@ -21,11 +21,22 @@ import { IMPORT_MAX_VERTICES, MeshImportError, PolygonBuilder, decodeText, finis
 /** Materials by name: the diffuse color of each, 0..1. */
 export type Materials = Map<string, [number, number, number]>
 
+/**
+ * The longest line an OBJ may have. A face of the most corners import reads,
+ * written `v/vt/vn` with seven-digit indices, is about 25 KB; a longer line is
+ * not a vertex or a face, and splitting one into words first is how a 50 MB
+ * line would become millions of strings before any cap could refuse it.
+ */
+const MAX_LINE = 64 * 1024
+/** How much of an MTL is read. A material library is a few kilobytes. */
+const MAX_MTL = 4 * 1024 * 1024
+
 /** The materials in an MTL file. Unreadable lines are skipped: a material is a nicety, never a reason to refuse. */
 export function parseMtl(text: string): Materials {
   const out: Materials = new Map()
   let current: string | null = null
-  for (const raw of text.split(/\r?\n/)) {
+  for (const raw of text.slice(0, MAX_MTL).split(/\r?\n/)) {
+    if (raw.length > MAX_LINE) continue
     const line = raw.trim()
     if (line.startsWith('newmtl')) {
       current = line.slice(6).trim()
@@ -63,6 +74,7 @@ export function parseObj(bytes: Uint8Array, clock: Clock, materials: Materials =
     clock()
     let end = text.indexOf('\n', start)
     if (end < 0) end = len
+    if (end - start > MAX_LINE) throw new MeshImportError('That OBJ has a line too long to be a vertex or a face.')
     const line = text.slice(start, end)
     start = end + 1
     const c0 = line.charCodeAt(0), c1 = line.charCodeAt(1)

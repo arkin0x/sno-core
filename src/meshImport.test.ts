@@ -471,6 +471,15 @@ describe('malformed and hostile files', () => {
     fails('cut.vox', v.slice(0, v.length - 3))
   })
 
+  it('refuses an OBJ line too long to be a face before splitting it, and reads past a giant MTL line', () => {
+    const giant = new TextEncoder().encode('v 0 0 0\nv 1 0 0\nv 0 1 0\nf' + ' 1'.repeat(200_000) + '\n')
+    fails('giant.obj', giant, /line too long/)
+    const obj = objText(CUBE_POINTS, CUBE_QUADS, { materials: CUBE_QUADS.map(() => 'red'), mtllib: 'cube.mtl' })
+    const mtl = new TextEncoder().encode('newmtl red\nKd 1 0 0\n# ' + 'x'.repeat(100_000) + '\n')
+    const r = ok(importMesh({ files: [file('cube.obj', obj), file('cube.mtl', mtl)] }))
+    expect(r.shard.vertices.every((v) => indexOf(BUILT_IN, toBytes(v.c)) === 238)).toBe(true)
+  })
+
   it('refuses garbage, an empty file, a file over the size cap, and only a companion', () => {
     fails('noise.bin.ply', new Uint8Array(500).map((_, i) => (i * 7919) % 251), /PLY|header/)
     fails('empty.stl', new Uint8Array(0), /empty/)
