@@ -35,7 +35,7 @@
  */
 
 import { IMPORT_MAX_VERTICES, MeshImportError, makeClock, type Clock, type ImportMesh } from './mesh.js'
-import { MAX_EXTENT, TICKS_PER_UNIT, neededExtent, toPayload, uuid, vertexAt, type ShardModel, type ShardVertex } from './shards.js'
+import { GRID_HALF, MAX_EXTENT, TICKS_PER_UNIT, neededExtent, toPayload, uuid, vertexAt, type ShardModel, type ShardVertex } from './shards.js'
 import { BUILT_IN, toModel, type Palette, type Rgb } from './snoPalette.js'
 
 /**
@@ -55,8 +55,19 @@ export const IMPORT_DEFAULT_COLOR: Rgb = toModel(BUILT_IN[226])
 /** The furthest a fitted shard may reach, in ticks: the 64-unit position bound (§1.8). */
 export const IMPORT_MAX_FIT = MAX_EXTENT * TICKS_PER_UNIT
 
+/**
+ * How large an import comes in on a grid of half-width `extent` units: its
+ * largest side is half the grid's reach, in ticks, so 4 units on the default
+ * grid of 8. That is the size of the largest stamps, it stands inside the
+ * bench's home view on a phone, and it leaves room on the grid to move it.
+ * GRID SIZE is the control: a larger grid brings a file in larger.
+ */
+export function importFitFor(extent: number): number {
+  return Math.max(TICKS_PER_UNIT, Math.round((Math.min(MAX_EXTENT, Math.max(1, extent)) * TICKS_PER_UNIT) / 2))
+}
+
 export interface MeshToShardOptions {
-  /** The largest side of the result, in ticks. Default: 8 units. */
+  /** The largest side of the result, in ticks. Default: importFitFor the default grid, 4 units. */
   fit?: number
   /** The shard's unit (§1.6). Default 0. */
   unit?: number
@@ -232,7 +243,7 @@ type Attempt = Fitted | 'empty' | null
  */
 export function meshToShard(mesh: ImportMesh, options: MeshToShardOptions = {}): Converted {
   const clock = options.clock ?? makeClock()
-  const fit = Math.max(1, Math.min(IMPORT_MAX_FIT, Math.round(options.fit ?? 8 * TICKS_PER_UNIT)))
+  const fit = Math.max(1, Math.min(IMPORT_MAX_FIT, Math.round(options.fit ?? importFitFor(GRID_HALF))))
   const palette = options.palette ?? BUILT_IN
   const budget = options.budget ?? IMPORT_BUDGET_BYTES
   const maxFaces = options.maxFaces ?? IMPORT_MAX_FACES

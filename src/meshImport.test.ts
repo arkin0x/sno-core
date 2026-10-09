@@ -14,7 +14,7 @@ import {
 } from './meshFixtures.fixture.js'
 import { importMesh, detectFormat, readMesh, type ImportFile, type ImportResponse } from './importFile.js'
 import { IMPORT_MAX_FILE_BYTES, MeshImportError, makeClock, type ImportMesh } from './mesh.js'
-import { IMPORT_BUDGET_BYTES, IMPORT_DEFAULT_COLOR, meshToShard, payloadBytes } from './meshToShard.js'
+import { IMPORT_BUDGET_BYTES, IMPORT_DEFAULT_COLOR, importFitFor, meshToShard, payloadBytes } from './meshToShard.js'
 import { parsePly } from './ply.js'
 import { parseStl } from './stl.js'
 import { parseGltf } from './gltf.js'
@@ -169,11 +169,19 @@ describe('the fit', () => {
   })
 
   it('turns a Z-up file (STL) onto Y up by a rotation: tall in Z becomes tall in Y, fronts still out', () => {
-    const s = run('tower.stl', stlBinary(cubeTris([1, 1, 3]))).shard
+    const s = run('tower.stl', stlBinary(cubeTris([1, 1, 3])), { fit: 8 * T }).shard
     const { min, max } = box(s)
     expect(max[1] - min[1]).toBe(8 * T)
     expect(max[0] - min[0]).toBe(Math.round((8 * T) / 3))
     expect(wireVolume(s)).toBeGreaterThan(0)
+  })
+
+  it('brings a file in at half the grid\'s reach: 4 units on the default grid, larger on a larger grid', () => {
+    expect(importFitFor(8)).toBe(4 * T)
+    expect(importFitFor(64)).toBe(32 * T)
+    expect(importFitFor(1)).toBe(T)
+    const s = run('cube.ply', plyAscii({ points: CUBE_POINTS, faces: CUBE_QUADS })).shard
+    expect(box(s).max[1]).toBe(4 * T)
   })
 
   it('never reaches past the 64-unit position bound, however large the fit asked', () => {
@@ -345,7 +353,7 @@ describe('glTF', () => {
       primitives: [{ ...cube, baseColor: [1, 0, 0, 1] as [number, number, number, number] }, { ...cube, baseColor: [0, 0, 1, 1] as [number, number, number, number] }],
       nodes: [{ translation: [-3, 0, 0] as V3 }, { translation: [3, 0, 0] as V3, scale: [-1, 1, 1] as V3 }],
     }
-    const s = run('two.glb', glb(spec)).shard
+    const s = run('two.glb', glb(spec), { fit: 8 * T }).shard
     expect(s.faces).toHaveLength(24)
     expect(new Set(s.facecolors?.map((c) => indexOf(BUILT_IN, toBytes(c))) ?? s.vertices.map((_, i) => index(s, i)))).toEqual(new Set([238, 239]))
     expect(wireVolume(s)).toBeGreaterThan(0)
