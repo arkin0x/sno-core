@@ -8,17 +8,25 @@
 
 export * from './clip.js'
 export * from './feed.js'
+export * from './gltf.js'
 // Named rather than starred: hsv.ts and snoPalette.ts each define `Rgb`, the
 // same three numbers, and neither should have to import the other to say so.
 // The format's own is the one this barrel carries.
 export { hsvToRgb, rgbToHsv, type Hsv } from './hsv.js'
+export * from './importFile.js'
+export * from './mesh.js'
+export * from './meshToShard.js'
+export * from './obj.js'
 export * from './orient.js'
 export * from './outline.js'
 export * from './parts.js'
+export * from './ply.js'
 export * from './pose.js'
 export * from './scale.js'
 export * from './shards.js'
 export * from './snoPalette.js'
 export * from './stamps.js'
+export * from './stl.js'
 export * from './triangulate.js'
+export * from './vox.js'
 export * from './winding.js'
