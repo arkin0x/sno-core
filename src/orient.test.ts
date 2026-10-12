@@ -95,3 +95,97 @@ describe('orientShard', () => {
     })
   })
 })
+
+/**
+ * Solids wound one at a time (arkinox, 2026-10-12). XOR's avatar is a stella
+ * octangula, two tetrahedra pushed through each other, and AUTO turned all
+ * eight of its faces inward: the middle of each face sits inside the other
+ * tetrahedron, and a shard-wide ray vote read that as pointing in.
+ */
+describe('orientShard, one solid at a time', () => {
+  type F = [number, number, number]
+  /** Every face's normal points away from `c`, the middle of its own solid. */
+  const allOutwardFrom = (pts: P3[], faces: F[], c: P3): boolean =>
+    faces.every((f) => {
+      const [a, b, d] = f.map((i) => pts[i])
+      const n = newell([a, b, d])
+      const m = [(a[0] + b[0] + d[0]) / 3 - c[0], (a[1] + b[1] + d[1]) / 3 - c[1], (a[2] + b[2] + d[2]) / 3 - c[2]]
+      return n[0] * m[0] + n[1] * m[1] + n[2] * m[2] > 1e-9
+    })
+  const shift = (faces: F[], k: number): F[] => faces.map((f) => [f[0] + k, f[1] + k, f[2] + k])
+  const flipped = (f: F): F => [f[0], f[2], f[1]]
+  /** A tetrahedron's four faces, every other one wound the wrong way. */
+  const tetraFaces = (k = 0): F[] => shift([[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]], k).map((f, i) => (i % 2 ? flipped(f) : f))
+  const cubePoints = (o: P3 = [0, 0, 0], s = 1): P3[] =>
+    [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]].map((p) => [o[0] + p[0] * s, o[1] + p[1] * s, o[2] + p[2] * s])
+  /** A unit cube's twelve triangles, wound outward. */
+  const CUBE: F[] = [[0, 3, 2], [0, 2, 1], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [3, 7, 6], [3, 6, 2], [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5]]
+
+  it('winds a single tetrahedron outward', () => {
+    const pts: P3[] = [[0, 0, 0], [2, 0, 0], [0, 2, 0], [0, 0, 2]]
+    const faces = orientFaces(pts, tetraFaces())
+    expect(allOutwardFrom(pts, faces, [0.5, 0.5, 0.5])).toBe(true)
+  })
+
+  it('winds a cube outward from all inward', () => {
+    const pts = cubePoints()
+    const faces = orientFaces(pts, CUBE.map(flipped))
+    expect(allOutwardFrom(pts, faces, [0.5, 0.5, 0.5])).toBe(true)
+  })
+
+  it('winds both tetrahedra of a stella octangula outward', () => {
+    // Alternate corners of a cube: two tetrahedra through each other, no
+    // corner or edge shared, eight faces in all.
+    const pts: P3[] = [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1], [-1, 1, 1], [1, -1, 1], [1, 1, -1]]
+    for (const start of [[...tetraFaces(0), ...tetraFaces(4)], [...tetraFaces(0), ...tetraFaces(4)].map(flipped)]) {
+      const { faces, interior } = orientShard(pts, start)
+      expect(faces).toHaveLength(8)
+      expect(allOutwardFrom(pts, faces, [0, 0, 0])).toBe(true)
+      expect(interior.some(Boolean)).toBe(false)
+    }
+  })
+
+  it('winds two disjoint cubes each by itself', () => {
+    const pts = [...cubePoints([0, 0, 0]), ...cubePoints([5, 0, 0])]
+    const faces = orientFaces(pts, [...CUBE.map(flipped), ...shift(CUBE, 8)])
+    expect(allOutwardFrom(pts, faces.slice(0, 12), [0.5, 0.5, 0.5])).toBe(true)
+    expect(allOutwardFrom(pts, faces.slice(12), [5.5, 0.5, 0.5])).toBe(true)
+  })
+
+  it('winds two cubes pushed through each other each by itself', () => {
+    const pts = [...cubePoints([0, 0, 0], 2), ...cubePoints([1, 1, 1], 2)]
+    const faces = orientFaces(pts, [...CUBE, ...shift(CUBE, 8).map(flipped)])
+    expect(allOutwardFrom(pts, faces.slice(0, 12), [1, 1, 1])).toBe(true)
+    expect(allOutwardFrom(pts, faces.slice(12), [2, 2, 2])).toBe(true)
+  })
+
+  it('turns back the one flipped face of a cube', () => {
+    const pts = cubePoints()
+    for (let k = 0; k < CUBE.length; k++) {
+      const faces = orientFaces(pts, CUBE.map((f, i) => (i === k ? flipped(f) : f)))
+      expect(faces).toEqual(CUBE)
+    }
+  })
+
+  it('keeps an open shell as before: a lidless box faces out, a lone plate faces up', () => {
+    // The cube without its top (faces 6 and 7, the y = 1 side).
+    const open = CUBE.filter((_, i) => i !== 6 && i !== 7)
+    const pts = cubePoints()
+    for (const start of [open, open.map(flipped)]) {
+      expect(allOutwardFrom(pts, orientFaces(pts, start), [0.5, 0.5, 0.5])).toBe(true)
+    }
+    const plate: P3[] = [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]]
+    const up = orientFaces(plate, [[0, 1, 2], [0, 2, 3]])
+    for (const f of up) expect(newell(f.map((i) => plate[i]))[1]).toBeGreaterThan(0)
+  })
+
+  it('leaves degenerate faces as they came, and they do not open a closed solid', () => {
+    const pts: P3[] = [[0, 0, 0], [2, 0, 0], [0, 2, 0], [0, 0, 2], [1, 0, 0]]
+    // A repeated corner, and corners on a line along the tetrahedron's 0-1 edge.
+    const junk: F[] = [[0, 0, 3], [0, 4, 1], [1, 0, 4]]
+    const faces = orientFaces(pts, [...tetraFaces().map(flipped), ...junk])
+    expect(allOutwardFrom(pts, faces.slice(0, 4), [0.5, 0.5, 0.5])).toBe(true)
+    expect(faces.slice(4)).toEqual(junk)
+    expect(orientShard(pts, junk).interior).toEqual([false, false, false])
+  })
+})
