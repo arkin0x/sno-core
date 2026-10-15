@@ -211,7 +211,7 @@ export interface FeedListing {
   title: string
   /** The `price` tag, a positive whole number of sats. */
   priceSats: number
-  /** Element [3] of the `encrypted` tag: where the key is bought. Always one of `FANFARES_KEY_SERVICES`. */
+  /** Element [3] of the `encrypted` tag: where the key is bought, any seller's. Always `https:` with no credentials. */
   keyService: string
   /** The turntable GIF. */
   preview?: ListingImage
@@ -255,36 +255,7 @@ function httpsUrl(s: string | undefined): string | null {
   }
 }
 
-/**
- * The key services Fanfares publishes in element [3] of an `encrypted` tag:
- * the `/request-key` route of its production and its staging Worker
- * (fanfares-workers `FANFARES_KEY_SERVICE_URLS`). Both derive keys from the
- * same secrets, so either one sells any Fanfares object.
- */
-export const FANFARES_KEY_SERVICES: readonly string[] = [
-  'https://api.fanfares.live/request-key',
-  'https://staging.api.fanfares.live/request-key',
-]
-
-/** A key service URL in the form the Worker compares: no credentials, query or fragment; host lowercased, default port and trailing slash dropped. */
-function keyServiceForm(s: string): string | null {
-  let u: URL
-  try { u = new URL(s.trim()) } catch { return null }
-  if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash) return null
-  return `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}`
-}
-
-/**
- * Whether element [3] of an `encrypted` tag names the Fanfares key service,
- * compared as the Worker compares it. Any other key service is not one
- * Fanfares sells keys for, so a BUY ON FANFARES for it would sell nothing.
- */
-export function isFanfaresKeyService(s: string | undefined): boolean {
-  const form = s ? keyServiceForm(s) : null
-  return form !== null && FANFARES_KEY_SERVICES.some((k) => keyServiceForm(k) === form)
-}
-
-/** NIP-FF-2: the `d` of a Fanfares event is a UUIDv4. */
+/** NIP-FF-2: the `d` of an event for sale is a UUIDv4. */
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 /** Canonical padded base64. */
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
@@ -331,23 +302,22 @@ function listingImages(tags: readonly string[][]): { preview?: ListingImage; thu
  *
  * A kind 33331 with an `encrypted` tag is one of two things, told apart by
  * element [3]: `cyberspace:region` is an object hidden at a place (DECK-0003
- * §3.4), which no feed shows; the Fanfares key service
- * (`FANFARES_KEY_SERVICES`) is an object for sale (NIP-FF-1), which it does,
- * when the event is in the shape the Fanfares Worker sells (NIP-FF-2): one
- * `aes-256-gcm` `encrypted` tag with its ciphertext, one UUIDv4 `d`, one
- * `["price", "<positive whole sats>", "SATS"]` and a `zap` recipient.
- * Anything else, another key service included, is neither and is left out.
+ * §3.4), which no feed shows; an `https:` key service URL, any seller's, is an
+ * object for sale (NIP-FF-1), which it does, when the event is in the NIP-FF-2
+ * shape: one `aes-256-gcm` `encrypted` tag with its ciphertext, one UUIDv4
+ * `d`, one `["price", "<positive whole sats>", "SATS"]` and a `zap`
+ * recipient. Anything else is neither and is left out.
  * `content` is the preview text and is never read as a payload.
  */
 export function listingFromEvent(ev: FeedEvent): FeedListing | null {
   if (ev.kind !== SNO_KIND) return null
-  // The shape the Fanfares Worker sells (fanfares-workers validateSnoObjectForSale),
-  // checked the same way here, so no card offers what Fanfares would refuse to sell.
+  // The NIP-FF-2 shape of an object for sale (the one fanfares-workers
+  // validateSnoObjectForSale checks), whoever sells its key.
   const encs = ev.tags.filter((t) => t[0] === 'encrypted')
   if (encs.length !== 1) return null
   const [, scheme, ciphertext, keyService] = encs[0]
-  // cyberspace:region (hidden at a place), a missing [3], or anyone else's key service.
-  if (!isFanfaresKeyService(keyService)) return null
+  // Any seller's https key service. cyberspace:region (hidden at a place) or a missing [3] is not one.
+  if (!httpsUrl(keyService)) return null
   if (scheme !== 'aes-256-gcm') return null
   if (typeof ciphertext !== 'string' || !BASE64.test(ciphertext)) return null
   if ((ciphertext.length / 4) * 3 - (ciphertext.endsWith('==') ? 2 : ciphertext.endsWith('=') ? 1 : 0) < MIN_CIPHERTEXT_BYTES) return null

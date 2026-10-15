@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AUTH_DEADLINE_MS, CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
-  FANFARES_KEY_SERVICES, feedItems, isDeleted, isFanfaresKeyService, isListing, listingFromEvent, listingPointer, objectFromEvent, readCredit, readEach,
+  feedItems, isDeleted, isListing, listingFromEvent, listingPointer, objectFromEvent, readCredit, readEach,
   type DeletionFilter, type FeedEvent, type FeedFilter, type FeedState, type ReadFilter, type Subscribe,
 } from './feed.js'
 import { toPayload } from './shards.js'
@@ -409,7 +409,7 @@ describe('objects for sale (NIP-FF-1 key service in encrypted[3])', () => {
     expect(listingFromEvent(changed(['price']))).toBeNull()
     for (const bad of ['0', '-5', '1.5', '21e3', '', ' 21', '99999999999999999']) expect(listingFromEvent(changed(['price', bad, 'SATS'])), bad).toBeNull()
     expect(listingFromEvent(changed(['price', '2100', 'USD']))).toBeNull()
-    // The unit is required and is the literal SATS, as the Worker requires.
+    // The unit is required and is the literal SATS (NIP-FF-2).
     for (const unit of [undefined, 'sats', 'Sats', 'SAT', 'BTC']) expect(listingFromEvent(changed(unit === undefined ? ['price', '2100'] : ['price', '2100', unit])), String(unit)).toBeNull()
     expect(listingFromEvent({ ...LISTING, tags: [...LISTING.tags, ['price', '1', 'SATS']] })).toBeNull()
     expect(listingFromEvent(changed(['price', '9007199254740991', 'SATS']))?.priceSats).toBe(9007199254740991)
@@ -423,24 +423,17 @@ describe('objects for sale (NIP-FF-1 key service in encrypted[3])', () => {
     expect(listingFromEvent({ ...LISTING, kind: 30023 })).toBeNull()
   })
 
-  it('lists only what Fanfares sells: its own key service, compared as the Worker compares it', () => {
+  it('lists an object for sale whoever sells its key, over https only', () => {
     const at = (url: string): FeedEvent => changed(['encrypted', 'aes-256-gcm', 'dGVzdC1maXh0dXJlLWNpcGhlcnRleHQtbm90LXJlYWwtZGF0YQ==', url])
-    for (const ok of ['https://api.fanfares.live/request-key', 'https://staging.api.fanfares.live/request-key', 'https://API.Fanfares.Live/request-key', 'https://api.fanfares.live:443/request-key', 'https://api.fanfares.live/request-key/']) {
-      expect(isFanfaresKeyService(ok), ok).toBe(true)
+    for (const ok of ['https://api.fanfares.live/request-key', 'https://staging.api.fanfares.live/request-key', 'https://keys.example.com/request-key', 'https://sno.example.org/sell?item=1']) {
       expect(listingFromEvent(at(ok))?.keyService, ok).toBe(ok)
     }
-    for (const bad of [
-      'https://keys.example.com/request-key', 'https://api.fanfares.live.example.com/request-key', 'https://evil.example/api.fanfares.live/request-key',
-      'http://api.fanfares.live/request-key', 'https://api.fanfares.live/request-key?x=1', 'https://api.fanfares.live/request-key#x',
-      'https://user:pass@api.fanfares.live/request-key', 'https://api.fanfares.live/other', 'http://localhost:8787/request-key', 'cyberspace:region', 'request-key',
-    ]) {
-      expect(isFanfaresKeyService(bad), bad).toBe(false)
+    for (const bad of ['http://api.fanfares.live/request-key', 'https://user:pass@keys.example.com/request-key', 'javascript:alert(1)', 'data:text/plain,x', 'cyberspace:region', 'request-key', '']) {
       expect(listingFromEvent(at(bad)), bad).toBeNull()
     }
-    expect(FANFARES_KEY_SERVICES).toEqual(['https://api.fanfares.live/request-key', 'https://staging.api.fanfares.live/request-key'])
   })
 
-  it('refuses what the Worker would not sell: two encrypted tags, another cipher, no ciphertext, a d that is not one UUIDv4, no zap', () => {
+  it('refuses what is not in the NIP-FF-2 shape: two encrypted tags, another cipher, no ciphertext, a d that is not one UUIDv4, no zap', () => {
     const enc = LISTING.tags.find((t) => t[0] === 'encrypted')!
     // A second encrypted tag naming a place: hidden, never a listing, whichever comes first.
     expect(listingFromEvent({ ...LISTING, tags: [...LISTING.tags, ['encrypted', 'aes-256-gcm', 'x', 'cyberspace:region']] })).toBeNull()
