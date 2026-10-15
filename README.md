@@ -31,6 +31,7 @@ Section numbers in the comments here refer to that deck.
 | `orient` | The outward guess: winding a mesh outward, and finding the faces buried inside a join |
 | `winding` | Setting a face's front, which readers obey (DECK-0003 §1.4): FLIP FACE, FLIP SURFACE, AUTO, and new faces wound as they are made |
 | `outline` | The edges of a set of faces |
+| `fingerprint` | An object's shape as canonical text, one letter-only token per triangle, for a similarity fingerprint such as Fanfares' `X` tag: the same under vertex and face order, winding, translation and recoloring, different under rotation, scale and mirroring |
 | `parts` | One object placing others (DECK-0003 §1.10): resolving placements through a client's fetch, with the depth, loop and placeholder rules, and where each one stands |
 | `clip` | Cutting a mesh to a box, and the color interpolated across the cut |
 | `hsv` | Hue, saturation and brightness |
