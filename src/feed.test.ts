@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AUTH_DEADLINE_MS, CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
-  feedItems, isDeleted, isListing, listingFromEvent, listingPointer, objectFromEvent, readCredit, readEach,
+  MAX_PRICE_SATS, SELLER_LABEL_MAX, feedItems, handlerFilter, isDeleted, isListing, listingApp, listingFromEvent, listingPointer, objectFromEvent, readCredit, readEach,
+  registrableDomain, sellerLink,
   type DeletionFilter, type FeedEvent, type FeedFilter, type FeedState, type ReadFilter, type Subscribe,
 } from './feed.js'
 import { toPayload } from './shards.js'
@@ -412,8 +413,10 @@ describe('objects for sale (NIP-FF-1 key service in encrypted[3])', () => {
     // The unit is required and is the literal SATS (NIP-FF-2).
     for (const unit of [undefined, 'sats', 'Sats', 'SAT', 'BTC']) expect(listingFromEvent(changed(unit === undefined ? ['price', '2100'] : ['price', '2100', unit])), String(unit)).toBeNull()
     expect(listingFromEvent({ ...LISTING, tags: [...LISTING.tags, ['price', '1', 'SATS']] })).toBeNull()
-    expect(listingFromEvent(changed(['price', '9007199254740991', 'SATS']))?.priceSats).toBe(9007199254740991)
-    expect(listingFromEvent(changed(['price', '9007199254740992', 'SATS']))).toBeNull()
+    // At most every bitcoin there will ever be.
+    expect(MAX_PRICE_SATS).toBe(2_100_000_000_000_000)
+    expect(listingFromEvent(changed(['price', '2100000000000000', 'SATS']))?.priceSats).toBe(2_100_000_000_000_000)
+    for (const over of ['2100000000000001', '9007199254740991', '9007199254740992']) expect(listingFromEvent(changed(['price', over, 'SATS'])), over).toBeNull()
     expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', 'x', 'http://keys.example.com/request-key']))).toBeNull()
     expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', 'x', 'https://user:pw@keys.example.com/']))).toBeNull()
     expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', 'x']))).toBeNull()
@@ -433,17 +436,26 @@ describe('objects for sale (NIP-FF-1 key service in encrypted[3])', () => {
     }
   })
 
-  it('refuses what is not in the NIP-FF-2 shape: two encrypted tags, another cipher, no ciphertext, a d that is not one UUIDv4, no zap', () => {
+  it('needs NIP-FF-1 and a price, not the rest of NIP-FF-2: one encrypted tag, aes-256-gcm, a ciphertext', () => {
     const enc = LISTING.tags.find((t) => t[0] === 'encrypted')!
     // A second encrypted tag naming a place: hidden, never a listing, whichever comes first.
     expect(listingFromEvent({ ...LISTING, tags: [...LISTING.tags, ['encrypted', 'aes-256-gcm', 'x', 'cyberspace:region']] })).toBeNull()
     expect(listingFromEvent({ ...LISTING, tags: [['encrypted', 'aes-256-gcm', 'x', 'cyberspace:region'], ...LISTING.tags] })).toBeNull()
     expect(listingFromEvent(changed(['encrypted', 'chacha20', enc[2], enc[3]]))).toBeNull()
     for (const ct of ['', 'not base64!', 'dGVzdA==', 'dGVzdC1maXh0dXJlLWNpcGhlcnRleHQtbm90LXJlYWwtZGF0YQ']) expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', ct, enc[3]])), ct).toBeNull()
-    for (const d of ['chair', '6f1c2a8e-4b7d-1e0a-9c3f-2d5e8b1a7c40', '6f1c2a8e-4b7d-4e0a-9c3f-2d5e8b1a7c40x', 'x'.repeat(4000)]) expect(listingFromEvent(changed(['d', d])), d.slice(0, 40)).toBeNull()
-    expect(listingFromEvent({ ...LISTING, tags: [...LISTING.tags, ['d', '7a1c2a8e-4b7d-4e0a-9c3f-2d5e8b1a7c40']] })).toBeNull()
-    expect(listingFromEvent(changed(['zap']))).toBeNull()
-    expect(listingFromEvent(changed(['zap', '']))).toBeNull()
+    // Fanfares' own rules (a zap recipient, a UUIDv4 d) are its key service's to enforce, not a reader's.
+    expect(listingFromEvent(changed(['zap']))?.title).toBe('Brass Orrery')
+    expect(listingFromEvent(changed(['d', 'brass-orrery']))?.d).toBe('brass-orrery')
+    expect(listingFromEvent(changed(['d', '6f1c2a8e-4b7d-1e0a-9c3f-2d5e8b1a7c40']))?.d).toBe('6f1c2a8e-4b7d-1e0a-9c3f-2d5e8b1a7c40')
+  })
+
+  it('a d is printable ASCII and at most 128 bytes, so an naddr can always be made from it (the crash a 4000-character d caused)', () => {
+    expect(listingFromEvent(changed(['d', 'x'.repeat(128)]))?.d).toHaveLength(128)
+    for (const d of ['x'.repeat(129), 'x'.repeat(4000), 'x'.repeat(1_000_000), '', 'caf\u00e9', 'tab\there', 'new\nline', '\u202eevil', '\u{1F600}']) {
+      expect(listingFromEvent(changed(['d', d])), JSON.stringify(d.slice(0, 20))).toBeNull()
+    }
+    // The first d is the address, as for any addressable event.
+    expect(listingFromEvent({ ...LISTING, tags: [...LISTING.tags, ['d', 'second']] })?.d).toBe(LISTING.tags[0][1])
   })
 
   it('shows only https pictures of an image type, and never an encrypted file', () => {
@@ -500,6 +512,86 @@ describe('objects for sale (NIP-FF-1 key service in encrypted[3])', () => {
     const s = await run([LISTING, unsealed])
     expect(s.listings).toEqual([])
     expect(s.objects.map((o) => o.d)).toEqual([d])
+  })
+})
+
+describe("where a listing is bought: the seller's app (NIP-89)", () => {
+  const APP_PK = 'e1'.repeat(32)
+  const NADDR = 'naddr1test'
+  /** A listing published with an app that names itself in a client tag. */
+  const withApp = (keyService = 'https://keys.example.com/request-key'): FeedEvent => changed(
+    ['encrypted', 'aes-256-gcm', LISTING.tags[1][2], keyService],
+    ['client', 'Sno Shop', `31990:${APP_PK}:snoshop`, 'wss://relay.snoshop.example'],
+  )
+  /** The app's handler (kind 31990), as a relay would send it. Signatures are the client's to check. */
+  const handler = (over: Partial<FeedEvent> & { tags?: string[][] } = {}): FeedEvent => ({
+    id: 'f'.repeat(64), pubkey: APP_PK, created_at: 1792000000, kind: 31990,
+    content: JSON.stringify({ name: 'Sno Shop', display_name: 'The Sno Shop' }),
+    tags: [['d', 'snoshop'], ['k', '33331'], ['web', 'https://shop.snoshop.example/item/<bech32>', 'naddr'], ['web', 'https://shop.snoshop.example/e/<bech32>', 'nevent']],
+    ...over,
+  })
+
+  it('reads the app from the client tag, else from an a tag naming a 31990, never from a placement', () => {
+    expect(listingFromEvent(withApp())!.app).toEqual({ address: `31990:${APP_PK}:snoshop`, pubkey: APP_PK, d: 'snoshop', name: 'Sno Shop', relay: 'wss://relay.snoshop.example' })
+    expect(listingFromEvent(LISTING)!.app).toEqual({ address: '31990:d7d8109ee43657ce6056ada4653006bbb641f31e50e85243681c2724507811ec:Fanfares', pubkey: 'd7d8109ee43657ce6056ada4653006bbb641f31e50e85243681c2724507811ec', d: 'Fanfares' })
+    expect(listingApp([['a', `33331:${APP_PK}:chair`]])).toBeUndefined()
+    expect(listingApp([['client', 'Just a name']])).toBeUndefined()
+    expect(listingApp([['client', 'X', `31990:${APP_PK}:x`, 'http://not-a-relay']])?.relay).toBeUndefined()
+    expect(handlerFilter({ pubkey: APP_PK, d: 'snoshop' })).toEqual({ kinds: [31990], authors: [APP_PK], '#d': ['snoshop'], limit: 5 })
+  })
+
+  it("a valid handler: its naddr page, its display name, and the link's own domain", () => {
+    const link = sellerLink(listingFromEvent(withApp())!, NADDR, handler())
+    expect(link).toEqual({ label: 'Sno Shop', url: 'https://shop.snoshop.example/item/naddr1test', domain: 'snoshop.example' })
+    // display_name when there is no name; the client tag's name when the content has neither; long names cut.
+    expect(sellerLink(listingFromEvent(withApp())!, NADDR, handler({ content: JSON.stringify({ display_name: 'Display' }) })).label).toBe('Display')
+    expect(sellerLink(listingFromEvent(withApp())!, NADDR, handler({ content: '' })).label).toBe('Sno Shop')
+    const long = sellerLink(listingFromEvent(withApp())!, NADDR, handler({ content: JSON.stringify({ name: 'A Very Long Name For A Shop That Sells Things' }) })).label
+    expect(long.length).toBeLessThanOrEqual(SELLER_LABEL_MAX)
+    expect(long.endsWith('…')).toBe(true)
+    // An untyped web template counts; an nevent one does not.
+    expect(sellerLink(listingFromEvent(withApp())!, NADDR, handler({ tags: [['d', 'snoshop'], ['k', '33331'], ['web', 'https://any.example/<bech32>']] })).url).toBe('https://any.example/naddr1test')
+    expect(sellerLink(listingFromEvent(withApp())!, NADDR, handler({ tags: [['d', 'snoshop'], ['k', '33331'], ['web', 'https://any.example/<bech32>', 'nevent']] })).url).toBe('https://njump.me/naddr1test')
+  })
+
+  it("a handler by the wrong key, for another d, of another kind, or without k 33331 is ignored: the fallback stands", () => {
+    const l = listingFromEvent(withApp())!
+    const fallback = { label: 'example.com', url: 'https://njump.me/naddr1test', domain: 'njump.me' }
+    expect(sellerLink(l, NADDR, handler({ pubkey: 'e2'.repeat(32) }))).toEqual(fallback)
+    expect(sellerLink(l, NADDR, handler({ tags: [['d', 'other'], ['k', '33331'], ['web', 'https://shop.snoshop.example/item/<bech32>', 'naddr']] }))).toEqual(fallback)
+    expect(sellerLink(l, NADDR, handler({ kind: 31989 }))).toEqual(fallback)
+    expect(sellerLink(l, NADDR, handler({ tags: [['d', 'snoshop'], ['k', '30023'], ['web', 'https://shop.snoshop.example/item/<bech32>', 'naddr']] }))).toEqual(fallback)
+    expect(sellerLink(l, NADDR, handler({ tags: [['d', 'snoshop'], ['web', 'https://shop.snoshop.example/item/<bech32>', 'naddr']] }))).toEqual(fallback)
+    expect(sellerLink(l, NADDR, null)).toEqual(fallback)
+  })
+
+  it('a web template that is not https, or has no <bech32>, is ignored', () => {
+    const l = listingFromEvent(withApp())!
+    for (const web of ['http://shop.snoshop.example/<bech32>', 'javascript:alert("<bech32>")', 'https://user:pw@shop.snoshop.example/<bech32>', 'https://shop.snoshop.example/item']) {
+      expect(sellerLink(l, NADDR, handler({ tags: [['d', 'snoshop'], ['k', '33331'], ['web', web, 'naddr']] })).url, web).toBe('https://njump.me/naddr1test')
+    }
+  })
+
+  it("no handler and a Fanfares key service: Fanfares' naddr page", () => {
+    for (const ks of ['https://api.fanfares.live/request-key', 'https://staging.api.fanfares.live/request-key']) {
+      expect(sellerLink(listingFromEvent(withApp(ks))!, NADDR)).toEqual({ label: 'Fanfares', url: 'https://fanfares.io/naddr/naddr1test', domain: 'fanfares.io' })
+    }
+    expect(sellerLink(listingFromEvent(LISTING)!, NADDR, null).label).toBe('Fanfares')
+  })
+
+  it("no handler and another key service: njump, labelled with the key service's domain, the domain beside it njump's own", () => {
+    expect(sellerLink(listingFromEvent(withApp('https://keys.sno.example.co.uk/request-key'))!, NADDR)).toEqual({ label: 'example.co.uk', url: 'https://njump.me/naddr1test', domain: 'njump.me' })
+    // A lookalike host is named by its own registrable domain, never by the name it hides behind.
+    expect(sellerLink(listingFromEvent(withApp('https://api.fanfares.live.evil.example/request-key'))!, NADDR).label).toBe('evil.example')
+  })
+
+  it('the registrable domain: last two labels, three under a listed shared suffix, the host for an IP', () => {
+    expect(registrableDomain('https://shop.snoshop.example/x')).toBe('snoshop.example')
+    expect(registrableDomain('https://fanfares.io/naddr/x')).toBe('fanfares.io')
+    expect(registrableDomain('https://evil.github.io/x')).toBe('evil.github.io')
+    expect(registrableDomain('https://a.b.example.co.uk/')).toBe('example.co.uk')
+    expect(registrableDomain('https://203.0.113.9/x')).toBe('203.0.113.9')
+    expect(registrableDomain('not a url')).toBe('')
   })
 })
 

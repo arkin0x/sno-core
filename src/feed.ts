@@ -25,11 +25,13 @@
  * - **Deletions:** after each page, its authors' kind 5 deletions of what it
  *   brought, by address and by id (one tag filter each), and a deleted
  *   object is not shown (NIP-09, `isDeleted`).
- * - **What a sale listing is:** `listingFromEvent`. A 33331 for sale on
- *   Fanfares is partially encrypted (NIP-FF-1, DECK-0003 §3.4): its shape is
- *   sealed until someone buys the key, and what is public is a title, a
- *   price and a preview picture. The feed carries those as `listings`, apart
- *   from `objects`, because a listing has no geometry to draw or place.
+ * - **What a sale listing is:** `listingFromEvent`. A 33331 for sale is
+ *   partially encrypted (NIP-FF-1, DECK-0003 §3.4) with a key any seller's
+ *   key service sells: its shape is sealed until someone buys the key, and
+ *   what is public is a title, a price and a preview picture. The feed
+ *   carries those as `listings`, apart from `objects`, because a listing has
+ *   no geometry to draw or place. `sellerLink` says where to buy one: the
+ *   seller's app through its NIP-89 handler, when the client has fetched it.
  *
  * Like parts.ts, this package does no networking: the client passes in how
  * to subscribe to one relay, and keeps its own pool, auth and relay list.
@@ -225,6 +227,23 @@ export interface FeedListing {
   event: FeedEvent
   /** The relays it was read from (createFeed), for the naddr's relay hints. */
   seen?: string[]
+  /** The app the seller listed it with (NIP-89), when the event names one: where its BUY button can point. */
+  app?: ListingApp
+}
+
+/**
+ * The app a listing was published with: a NIP-89 handler's coordinate, from
+ * the `client` tag's element [2], else an `a` tag naming a kind 31990.
+ */
+export interface ListingApp {
+  /** `31990:<pubkey>:<d>`. */
+  address: string
+  pubkey: string
+  d: string
+  /** The `client` tag's element [1], the app's own name for itself, when it has one. */
+  name?: string
+  /** A `wss:` relay hint from the same tag, when it has one. */
+  relay?: string
 }
 
 /** Something the feed shows: an object, or an object for sale. */
@@ -255,8 +274,15 @@ function httpsUrl(s: string | undefined): string | null {
   }
 }
 
-/** NIP-FF-2: the `d` of an event for sale is a UUIDv4. */
-const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+/**
+ * A listing's `d`: present, printable ASCII, at most 128 bytes. The bound is
+ * what keeps an naddr encodable: nip19 corrupts an identifier over 255 bytes
+ * and throws on a long enough one, and both clients encode it while drawing a
+ * card. (A UUIDv4, NIP-FF-2's rule, is Fanfares' to enforce, not a reader's.)
+ */
+const LISTING_D = /^[\x20-\x7e]{1,128}$/
+/** The most a price can be: every bitcoin there will ever be, 21 million times 100 million sats. Anything above is not a price. */
+export const MAX_PRICE_SATS = 2_100_000_000_000_000
 /** Canonical padded base64. */
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 /** NIP-FF-1 `aes-256-gcm`: a 12-byte IV, a 16-byte tag, and at least one byte of payload. */
@@ -303,16 +329,22 @@ function listingImages(tags: readonly string[][]): { preview?: ListingImage; thu
  * A kind 33331 with an `encrypted` tag is one of two things, told apart by
  * element [3]: `cyberspace:region` is an object hidden at a place (DECK-0003
  * §3.4), which no feed shows; an `https:` key service URL, any seller's, is an
- * object for sale (NIP-FF-1), which it does, when the event is in the NIP-FF-2
- * shape: one `aes-256-gcm` `encrypted` tag with its ciphertext, one UUIDv4
- * `d`, one `["price", "<positive whole sats>", "SATS"]` and a `zap`
- * recipient. Anything else is neither and is left out.
+ * object for sale (NIP-FF-1), which it does, when it carries:
+ *
+ * - exactly one `encrypted` tag: `aes-256-gcm`, its ciphertext (NIP-FF-1:
+ *   base64 of IV, payload and tag), and an `https:` key service with no
+ *   credentials in it;
+ * - exactly one `["price", "<positive whole sats>", "SATS"]`, at most
+ *   `MAX_PRICE_SATS`;
+ * - a `d` of printable ASCII, at most 128 bytes.
+ *
+ * NIP-FF-1 plus a price, not the whole of NIP-FF-2: a `zap` tag and a UUIDv4
+ * `d` are Fanfares' rules, which its own key service enforces, and another
+ * seller's key service need not share them. Anything else is left out.
  * `content` is the preview text and is never read as a payload.
  */
 export function listingFromEvent(ev: FeedEvent): FeedListing | null {
   if (ev.kind !== SNO_KIND) return null
-  // The NIP-FF-2 shape of an object for sale (the one fanfares-workers
-  // validateSnoObjectForSale checks), whoever sells its key.
   const encs = ev.tags.filter((t) => t[0] === 'encrypted')
   if (encs.length !== 1) return null
   const [, scheme, ciphertext, keyService] = encs[0]
@@ -321,19 +353,15 @@ export function listingFromEvent(ev: FeedEvent): FeedListing | null {
   if (scheme !== 'aes-256-gcm') return null
   if (typeof ciphertext !== 'string' || !BASE64.test(ciphertext)) return null
   if ((ciphertext.length / 4) * 3 - (ciphertext.endsWith('==') ? 2 : ciphertext.endsWith('=') ? 1 : 0) < MIN_CIPHERTEXT_BYTES) return null
-  // One UUIDv4 d (NIP-FF-2). It also keeps the naddr short: nip19 cannot encode an identifier over 255 bytes, and throws on a long enough one.
-  const ds = ev.tags.filter((t) => t[0] === 'd')
-  if (ds.length !== 1 || !UUID_V4.test(ds[0][1] ?? '')) return null
-  const d = ds[0][1]
-  // One price, ["price", "<positive whole sats>", "SATS"], the literal SATS (NIP-FF-2): another unit read as sats would misstate the price.
+  const d = ev.tags.find((t) => t[0] === 'd')?.[1]
+  if (typeof d !== 'string' || !LISTING_D.test(d)) return null
+  // One price, ["price", "<positive whole sats>", "SATS"], the literal SATS: another unit read as sats would misstate the price.
   const prices = ev.tags.filter((t) => t[0] === 'price')
   if (prices.length !== 1) return null
   const [, amount, unit] = prices[0]
   if (!/^[1-9]\d{0,15}$/.test(amount ?? '') || unit !== 'SATS') return null
   const priceSats = Number(amount)
-  if (!Number.isSafeInteger(priceSats)) return null
-  // Someone to pay (NIP-FF-2: at least one zap tag).
-  if (!ev.tags.some((t) => t[0] === 'zap' && !!t[1])) return null
+  if (!Number.isSafeInteger(priceSats) || priceSats > MAX_PRICE_SATS) return null
   const tag = (name: string): string => (ev.tags.find((t) => t[0] === name)?.[1] ?? '').trim()
   const { preview, thumb } = listingImages(ev.tags)
   const alt = preview?.alt ?? thumb?.alt ?? (tag('alt') || undefined)
@@ -353,7 +381,168 @@ export function listingFromEvent(ev: FeedEvent): FeedListing | null {
   if (preview) listing.preview = preview
   if (thumb) listing.thumb = thumb
   if (alt) listing.alt = alt
+  const app = listingApp(ev.tags)
+  if (app) listing.app = app
   return listing
+}
+
+/* --------------------------------------------------------------------------
+ * Where a listing is bought: the seller's app (NIP-89)
+ * ------------------------------------------------------------------------ */
+
+/** A NIP-89 handler (kind 31990). */
+export const HANDLER_KIND = 31990
+
+const HANDLER_ADDRESS = /^31990:([0-9a-f]{64}):([\x20-\x7e]{1,128})$/
+
+/** A `wss:` relay URL, else undefined. */
+function wssUrl(s: string | undefined): string | undefined {
+  if (!s) return undefined
+  try { return new URL(s).protocol === 'wss:' ? s : undefined } catch { return undefined }
+}
+
+/**
+ * The app a listing names: the `client` tag's coordinate (NIP-89, element
+ * [2]), else the first `a` tag naming a kind 31990. An `a` naming a 33331 is a
+ * placement (§1.10), never an app.
+ */
+export function listingApp(tags: readonly string[][]): ListingApp | undefined {
+  const client = tags.find((t) => t[0] === 'client')
+  const fromClient = client && HANDLER_ADDRESS.exec(client[2] ?? '')
+  const a = fromClient ? undefined : tags.find((t) => t[0] === 'a' && HANDLER_ADDRESS.test(t[1] ?? ''))
+  const m = fromClient ?? (a ? HANDLER_ADDRESS.exec(a[1]) : null)
+  if (!m) return undefined
+  const app: ListingApp = { address: m[0], pubkey: m[1], d: m[2] }
+  const name = client?.[1]?.trim()
+  if (name) app.name = name
+  const relay = wssUrl(fromClient ? client?.[3] : a?.[2])
+  if (relay) app.relay = relay
+  return app
+}
+
+/**
+ * The read for an app's handler: its author's kind 31990 with its `d`. One
+ * tag filter, well inside strfry's three.
+ */
+export function handlerFilter(app: Pick<ListingApp, 'pubkey' | 'd'>): { kinds: number[]; authors: string[]; '#d': string[]; limit: number } {
+  return { kinds: [HANDLER_KIND], authors: [app.pubkey], '#d': [app.d], limit: 5 }
+}
+
+/** Where a listing's BUY button goes, and what it says. */
+export interface SellerLink {
+  /** Who sells it, for "BUY ON <label>": the seller's app, Fanfares, or the key service's domain. */
+  label: string
+  /** The page to open. Always `https:`. */
+  url: string
+  /** The registrable domain of `url` itself, shown beside the button, so a name cannot hide where it goes. */
+  domain: string
+}
+
+/**
+ * Key services whose app has no handler listing kind 33331 yet, and the page
+ * that sells for them. Fanfares only, until its own handler lists 33331.
+ */
+const KNOWN_KEY_SERVICES: ReadonlyArray<{ hosts: readonly string[]; label: string; page: (naddr: string) => string }> = [
+  { hosts: ['api.fanfares.live', 'staging.api.fanfares.live'], label: 'Fanfares', page: (naddr) => `https://fanfares.io/naddr/${naddr}` },
+]
+
+/** Where a listing opens when its seller's app is unknown: njump, which shows any event. */
+export const FALLBACK_VIEWER = (naddr: string): string => `https://njump.me/${naddr}`
+
+/** How long a label may be before it is cut. */
+export const SELLER_LABEL_MAX = 24
+
+/**
+ * Suffixes under which anyone may hold a name, so the registrable domain is
+ * one label further left: a short, hand-kept part of the Public Suffix List
+ * (the common country second levels and the shared hosts a key service or a
+ * web app is likely to sit on). An unlisted one reads as its last two labels,
+ * which can name the host rather than its tenant; `domain` is a hint beside
+ * the button, and the link itself is the URL.
+ */
+const MULTI_LABEL_SUFFIXES = new Set([
+  'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'com.au', 'net.au', 'org.au', 'co.nz', 'co.jp', 'ne.jp', 'or.jp', 'com.br', 'com.mx', 'com.ar', 'co.za', 'co.in', 'co.kr', 'com.cn', 'com.tw', 'com.sg', 'com.tr',
+  'github.io', 'gitlab.io', 'pages.dev', 'workers.dev', 'vercel.app', 'netlify.app', 'herokuapp.com', 'fly.dev', 'onrender.com', 'web.app', 'firebaseapp.com', 'glitch.me', 'deno.dev', 'railway.app', 'replit.app', 'surge.sh', 'nostr1.com', 'nsite.lol', 'ngrok.app', 'ngrok-free.app', 'trycloudflare.com', 'r2.dev', 'appspot.com', 'azurewebsites.net', 'cloudfront.net', 'amazonaws.com',
+])
+
+/** The registrable domain of a URL's host (see MULTI_LABEL_SUFFIXES), or the host itself for an IP address or a single label. */
+export function registrableDomain(url: string): string {
+  let host: string
+  try { host = new URL(url).hostname.toLowerCase().replace(/\.$/, '') } catch { return '' }
+  if (/^\d+(\.\d+){3}$/.test(host) || host.startsWith('[')) return host
+  const labels = host.split('.')
+  if (labels.length <= 2) return host
+  const lastTwo = labels.slice(-2).join('.')
+  return MULTI_LABEL_SUFFIXES.has(lastTwo) ? labels.slice(-3).join('.') : lastTwo
+}
+
+/** A name fit for a button: control characters out, spaces collapsed, cut to `SELLER_LABEL_MAX`. */
+function labelOf(s: string | undefined): string {
+  const clean = (s ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, '').replace(/\s+/g, ' ').trim()
+  return clean.length > SELLER_LABEL_MAX ? `${clean.slice(0, SELLER_LABEL_MAX - 1).trimEnd()}…` : clean
+}
+
+/** The handler's display name: `name`, else `display_name`, from its content JSON (NIP-89 metadata). */
+function handlerName(content: string): string | undefined {
+  try {
+    const meta = JSON.parse(content) as Record<string, unknown>
+    for (const k of ['name', 'display_name']) if (typeof meta?.[k] === 'string' && (meta[k] as string).trim()) return meta[k] as string
+  } catch { /* no metadata */ }
+  return undefined
+}
+
+/**
+ * The page a valid handler opens for this listing, or null. Valid means: a
+ * kind 31990 by the pubkey the listing's app coordinate names, with its `d`,
+ * advertising `["k", "33331"]`, and a `web` template holding `<bech32>` for
+ * an naddr (typed `naddr`, or untyped), whose filled URL is `https:` with no
+ * credentials. The caller has already checked the event's signature.
+ */
+function handlerPage(app: ListingApp, handler: FeedEvent, naddr: string): string | null {
+  if (handler.kind !== HANDLER_KIND || handler.pubkey !== app.pubkey) return null
+  if (handler.tags.find((t) => t[0] === 'd')?.[1] !== app.d) return null
+  if (!handler.tags.some((t) => t[0] === 'k' && t[1] === String(SNO_KIND))) return null
+  const webs = handler.tags.filter((t) => t[0] === 'web' && typeof t[1] === 'string' && t[1].includes('<bech32>') && (t[2] === undefined || t[2] === '' || t[2] === 'naddr'))
+  // An explicit naddr template is the one meant for an address; an untyped one is a catch-all.
+  webs.sort((a, b) => Number(b[2] === 'naddr') - Number(a[2] === 'naddr'))
+  for (const w of webs) {
+    const url = httpsUrl(w[1].split('<bech32>').join(naddr))
+    if (url) return url
+  }
+  return null
+}
+
+/**
+ * Where to buy a listing, and what the button says (NIP-89).
+ *
+ * 1. With the seller's handler (fetched by the listing's app coordinate,
+ *    signature already checked): its `web` page for the naddr, labelled with
+ *    its display name, else the listing's `client` name.
+ * 2. Without one, a key service on the known list (Fanfares): that app's page.
+ * 3. Otherwise njump, which shows any event, labelled with the key service's
+ *    domain, so the buyer sees whose key service sells it.
+ *
+ * `naddr` is the listing's NIP-19 address (`listingPointer`, encoded by the
+ * client: this package does no bech32). `domain` is always the registrable
+ * domain of the URL the button opens, never a name the event chose.
+ */
+export function sellerLink(listing: Pick<FeedListing, 'keyService' | 'app'>, naddr: string, handler?: FeedEvent | null): SellerLink {
+  if (listing.app && handler) {
+    const url = handlerPage(listing.app, handler, naddr)
+    if (url) {
+      const domain = registrableDomain(url)
+      return { label: labelOf(handlerName(handler.content)) || labelOf(listing.app.name) || domain, url, domain }
+    }
+  }
+  let host = ''
+  try { host = new URL(listing.keyService).hostname.toLowerCase() } catch { /* listingFromEvent admits https only */ }
+  const known = KNOWN_KEY_SERVICES.find((k) => k.hosts.includes(host))
+  if (known) {
+    const url = known.page(naddr)
+    return { label: known.label, url, domain: registrableDomain(url) }
+  }
+  const url = FALLBACK_VIEWER(naddr)
+  return { label: labelOf(registrableDomain(listing.keyService)) || 'njump', url, domain: registrableDomain(url) }
 }
 
 /** Objects and listings as one list, newest first, the order the feed shows them in. */
