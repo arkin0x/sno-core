@@ -550,6 +550,8 @@ describe("where a listing is bought: the seller's app (NIP-89)", () => {
     expect(listingApp([['a', `33331:${APP_PK}:chair`]])).toBeUndefined()
     expect(listingApp([['client', 'Just a name']])).toBeUndefined()
     expect(listingApp([['client', 'X', `31990:${APP_PK}:x`, 'http://not-a-relay']])?.relay).toBeUndefined()
+    expect(listingApp([null as unknown as string[], ['client', 5 as unknown as string, `31990:${APP_PK}:x`]])).toEqual({ address: `31990:${APP_PK}:x`, pubkey: APP_PK, d: 'x' })
+    expect(listingApp([['client', 'X', 5 as unknown as string], ['a', 7 as unknown as string]])).toBeUndefined()
     expect(handlerFilter({ pubkey: APP_PK, d: 'snoshop' })).toEqual({ kinds: [31990], authors: [APP_PK], '#d': ['snoshop'], limit: 5 })
   })
 
@@ -605,6 +607,96 @@ describe("where a listing is bought: the seller's app (NIP-89)", () => {
     expect(registrableDomain('https://a.b.example.co.uk/')).toBe('example.co.uk')
     expect(registrableDomain('https://203.0.113.9/x')).toBe('203.0.113.9')
     expect(registrableDomain('not a url')).toBe('')
+  })
+
+  it('a country second level is a suffix, not a name; ports, IDNs, IPs and a trailing dot read as the host the URL opens', () => {
+    expect(registrableDomain('https://shop.co.il/')).toBe('shop.co.il')
+    expect(registrableDomain('https://a.shop.com.pl/')).toBe('shop.com.pl')
+    expect(registrableDomain('https://a.co.example/')).toBe('co.example')
+    expect(registrableDomain('https://fanfares.io:8443/x')).toBe('fanfares.io')
+    expect(registrableDomain('https://shop.fánfares.io/')).toBe('xn--fnfares-hwa.io')
+    expect(registrableDomain('https://0x7f.1/')).toBe('127.0.0.1')
+    expect(registrableDomain('https://[::1]:8080/')).toBe('[::1]')
+    expect(registrableDomain('https://fanfares.io./')).toBe('fanfares.io')
+    expect(registrableDomain('https://api.fanfares.live.evil.example/')).toBe('evil.example')
+  })
+
+  it('the domain is the URL the template opens, however the template is written', () => {
+    const l = listingFromEvent(withApp())!
+    const web = (w: string): ReturnType<typeof sellerLink> => sellerLink(l, NADDR, handler({ tags: [['d', 'snoshop'], ['k', '33331'], ['web', w, 'naddr']] }))
+    // Backslashes are slashes in an https URL, so this opens evil.example, and says so.
+    expect(web('https:\\\\evil.example\\<bech32>')).toMatchObject({ url: 'https://evil.example/naddr1test', domain: 'evil.example' })
+    // The naddr as the host is a host: shown as the domain, not hidden.
+    expect(web('https://<bech32>/')).toMatchObject({ url: 'https://naddr1test/', domain: 'naddr1test' })
+    expect(web('https://fanfares.io@evil.example/<bech32>').url).toBe('https://njump.me/naddr1test')
+    expect(web('<bech32>').url).toBe('https://njump.me/naddr1test')
+  })
+
+  it('a label loses direction and invisible characters, and is cut by character, never through an emoji', () => {
+    const l = listingFromEvent(withApp())!
+    const named = (name: string): string => sellerLink(l, NADDR, handler({ content: JSON.stringify({ name }) })).label
+    expect(named('\u202eoi.serafnaf\u2066\u061c\ufeff\u00ad\u2060x')).toBe('oi.serafnafx')
+    // Exactly the bound is kept whole; one past it is cut to the bound, the ellipsis included.
+    expect(named(`${'a'.repeat(SELLER_LABEL_MAX - 2)}\u{1F600}\u{1F600}`)).toBe(`${'a'.repeat(SELLER_LABEL_MAX - 2)}\u{1F600}\u{1F600}`)
+    const cut = named(`${'a'.repeat(SELLER_LABEL_MAX - 2)}\u{1F600}\u{1F600}\u{1F600}`)
+    expect(cut).toBe(`${'a'.repeat(SELLER_LABEL_MAX - 2)}\u{1F600}…`)
+    expect(/[\ud800-\udbff](?![\udc00-\udfff])/.test(cut)).toBe(false)
+    expect(Array.from(named('\u{1F600}'.repeat(100))).length).toBe(SELLER_LABEL_MAX)
+  })
+
+  it('a handler that is not well formed is no handler, and never throws', () => {
+    const l = listingFromEvent(withApp())!
+    const bad = [
+      handler({ tags: [null as unknown as string[], ['d', 'snoshop'], ['k', '33331'], ['web', 'https://x.example/<bech32>']] }),
+      handler({ tags: [['d', 'snoshop'], ['k', '33331'], ['web', 5 as unknown as string]] }),
+      handler({ content: 5 as unknown as string }),
+      handler({ tags: 'x' as unknown as string[][] }),
+    ]
+    for (const h of bad) expect(sellerLink(l, NADDR, h).url).toBe('https://njump.me/naddr1test')
+  })
+})
+
+describe('hostile events never throw', () => {
+  it('a tag holding a number, a null or an object is refused, as a listing and as an object', () => {
+    const edits: string[][][] = [
+      [['title', 5 as unknown as string]],
+      [['client', 5 as unknown as string, `31990:${'e1'.repeat(32)}:x`]],
+      [['imeta', 5 as unknown as string, null as unknown as string]],
+      [['price', 100 as unknown as string, 'SATS']],
+    ]
+    for (const e of edits) {
+      const ev = changed(...e)
+      expect(() => listingFromEvent(ev), JSON.stringify(e)).not.toThrow()
+      expect(listingFromEvent(ev)).toBeNull()
+    }
+    const nulled = { ...LISTING, tags: [null as unknown as string[], ...LISTING.tags] }
+    expect(listingFromEvent(nulled)).toBeNull()
+    expect(objectFromEvent({ ...obj('a', 1), tags: [null as unknown as string[], ['d', 'a']] })).toBeNull()
+    expect(objectFromEvent({ ...obj('a', 1), content: 5 as unknown as string })).toBeNull()
+  })
+
+  it('a ciphertext of megabytes is read without overflowing the regex stack', () => {
+    const big = 'A'.repeat(12 << 20)
+    expect(() => listingFromEvent(changed(['encrypted', 'aes-256-gcm', big, 'https://keys.example.com/k']))).not.toThrow()
+    expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', big, 'https://keys.example.com/k']))).not.toBeNull()
+    expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', `${big}!`, 'https://keys.example.com/k']))).toBeNull()
+    for (const bad of ['AAA', 'AAAAA===', '====', 'A===', 'AA=A']) {
+      expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', `${LISTING.tags[1][2]}${bad}`, 'https://keys.example.com/k'])), bad).toBeNull()
+    }
+  })
+
+  it('a feed with a malformed event still shows the rest', async () => {
+    const good = obj('chair', 2)
+    const bad = { ...obj('lamp', 3), tags: [['d', 'lamp'], ['title', 5 as unknown as string]] }
+    const worse = { ...obj('desk', 4), tags: [null as unknown as string[]] }
+    const { subscribe } = relays({ r1: { events: [worse, bad, good] } })
+    let last: FeedState | null = null
+    const feed = createFeed({ relays: ['r1'], subscribe, onChange: (st) => { last = st } })
+    const p = feed.more()
+    await vi.advanceTimersByTimeAsync(200)
+    await p
+    expect(last!.objects.map((o) => o.d)).toEqual(['chair'])
+    feed.close()
   })
 })
 

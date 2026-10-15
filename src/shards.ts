@@ -395,7 +395,8 @@ export function toPayload(s: ShardModel): ShardPayload {
     v: WIRE_VERSION,
     // §1.1: a blank name makes a payload every reader refuses, so the writer
     // puts the placeholder back rather than publish one.
-    name: blankName(s.name) ? PLACEHOLDER_NAME : s.name,
+    // A stored model from before names were required may have none at all.
+    name: typeof s.name !== 'string' || blankName(s.name) ? PLACEHOLDER_NAME : s.name,
     unit: s.unit,
     extent: s.extent,
     mode: s.mode,

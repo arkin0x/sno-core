@@ -160,6 +160,22 @@ export function objectAddress(pubkey: string, d: string): string {
 }
 
 /**
+ * Whether an event has the shape NIP-01 gives it: `tags` an array of arrays
+ * of strings, `content` a string. A relay is meant to refuse anything else,
+ * but a signature covers whatever was signed, and one relay that passes a
+ * `["title", 5]` along must not throw in a reader. Everything here reads tags
+ * as strings, so an event that fails this is not read at all.
+ */
+export function wellFormed(ev: Pick<FeedEvent, 'tags' | 'content'>): boolean {
+  if (typeof ev.content !== 'string' || !Array.isArray(ev.tags)) return false
+  for (const t of ev.tags) {
+    if (!Array.isArray(t)) return false
+    for (const x of t) if (typeof x !== 'string') return false
+  }
+  return true
+}
+
+/**
  * An object's `d`, or null when it has none a reader may accept (DECK-0003
  * §3.1): no `d` tag, or an empty one. The first `d` tag is the one that
  * counts, as NIP-01 reads it. A kind 33331 without one is refused, hidden or
@@ -173,7 +189,7 @@ export function objectD(ev: Pick<FeedEvent, 'tags'>): string | null {
 
 /** The object an event carries, or null when it is not one or is malformed. */
 export function objectFromEvent(ev: FeedEvent): FeedObject | null {
-  if (ev.kind !== SNO_KIND) return null
+  if (ev.kind !== SNO_KIND || !wellFormed(ev)) return null
   const d = objectD(ev)
   if (d === null) return null
   // A sealed object's content is a preview, not a payload. Sealed to a place
@@ -295,8 +311,13 @@ function httpsUrl(s: string | undefined): string | null {
 const LISTING_D = /^[\x20-\x7e]{1,128}$/
 /** The most a price can be: every bitcoin there will ever be, 21 million times 100 million sats. Anything above is not a price. */
 export const MAX_PRICE_SATS = 2_100_000_000_000_000
-/** Canonical padded base64. */
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+/**
+ * Padded base64: whole groups of four, with at most two `=` at the end. Not
+ * written as a repeated group of four, which V8 runs by backtracking, one
+ * stack frame a group, and which throws past a few megabytes of ciphertext.
+ */
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/
+const isBase64 = (s: string): boolean => s.length % 4 === 0 && BASE64.test(s)
 /** NIP-FF-1 `aes-256-gcm`: a 12-byte IV, a 16-byte tag, and at least one byte of payload. */
 const MIN_CIPHERTEXT_BYTES = 12 + 16 + 1
 
@@ -356,14 +377,14 @@ function listingImages(tags: readonly string[][]): { preview?: ListingImage; thu
  * `content` is the preview text and is never read as a payload.
  */
 export function listingFromEvent(ev: FeedEvent): FeedListing | null {
-  if (ev.kind !== SNO_KIND) return null
+  if (ev.kind !== SNO_KIND || !wellFormed(ev)) return null
   const encs = ev.tags.filter((t) => t[0] === 'encrypted')
   if (encs.length !== 1) return null
   const [, scheme, ciphertext, keyService] = encs[0]
   // Any seller's https key service. cyberspace:region (hidden at a place) or a missing [3] is not one.
   if (!httpsUrl(keyService)) return null
   if (scheme !== 'aes-256-gcm') return null
-  if (typeof ciphertext !== 'string' || !BASE64.test(ciphertext)) return null
+  if (typeof ciphertext !== 'string' || !isBase64(ciphertext)) return null
   if ((ciphertext.length / 4) * 3 - (ciphertext.endsWith('==') ? 2 : ciphertext.endsWith('=') ? 1 : 0) < MIN_CIPHERTEXT_BYTES) return null
   const d = objectD(ev)
   if (d === null || !LISTING_D.test(d)) return null
@@ -419,13 +440,13 @@ function wssUrl(s: string | undefined): string | undefined {
  * placement (§1.10), never an app.
  */
 export function listingApp(tags: readonly string[][]): ListingApp | undefined {
-  const client = tags.find((t) => t[0] === 'client')
-  const fromClient = client && HANDLER_ADDRESS.exec(client[2] ?? '')
-  const a = fromClient ? undefined : tags.find((t) => t[0] === 'a' && HANDLER_ADDRESS.test(t[1] ?? ''))
+  const client = tags.find((t) => Array.isArray(t) && t[0] === 'client')
+  const fromClient = client && typeof client[2] === 'string' ? HANDLER_ADDRESS.exec(client[2]) : null
+  const a = fromClient ? undefined : tags.find((t) => Array.isArray(t) && t[0] === 'a' && typeof t[1] === 'string' && HANDLER_ADDRESS.test(t[1]))
   const m = fromClient ?? (a ? HANDLER_ADDRESS.exec(a[1]) : null)
   if (!m) return undefined
   const app: ListingApp = { address: m[0], pubkey: m[1], d: m[2] }
-  const name = client?.[1]?.trim()
+  const name = typeof client?.[1] === 'string' ? client[1].trim() : undefined
   if (name) app.name = name
   const relay = wssUrl(fromClient ? client?.[3] : a?.[2])
   if (relay) app.relay = relay
@@ -477,6 +498,14 @@ const MULTI_LABEL_SUFFIXES = new Set([
   'github.io', 'gitlab.io', 'pages.dev', 'workers.dev', 'vercel.app', 'netlify.app', 'herokuapp.com', 'fly.dev', 'onrender.com', 'web.app', 'firebaseapp.com', 'glitch.me', 'deno.dev', 'railway.app', 'replit.app', 'surge.sh', 'nostr1.com', 'nsite.lol', 'ngrok.app', 'ngrok-free.app', 'trycloudflare.com', 'r2.dev', 'appspot.com', 'azurewebsites.net', 'cloudfront.net', 'amazonaws.com',
 ])
 
+/**
+ * The second levels most country domains sell names under (`shop.co.il`,
+ * `shop.com.pl`): under a two-letter top level, one of these is a suffix, not
+ * a name, so the domain is the three labels. Without this, an unlisted country
+ * reads as `co.il`, which names nobody.
+ */
+const COUNTRY_SECOND_LEVELS = new Set(['ac', 'co', 'com', 'edu', 'gob', 'gov', 'go', 'ltd', 'mil', 'ne', 'net', 'nic', 'or', 'org', 'plc', 'sch'])
+
 /** The registrable domain of a URL's host (see MULTI_LABEL_SUFFIXES), or the host itself for an IP address or a single label. */
 export function registrableDomain(url: string): string {
   let host: string
@@ -484,14 +513,23 @@ export function registrableDomain(url: string): string {
   if (/^\d+(\.\d+){3}$/.test(host) || host.startsWith('[')) return host
   const labels = host.split('.')
   if (labels.length <= 2) return host
-  const lastTwo = labels.slice(-2).join('.')
-  return MULTI_LABEL_SUFFIXES.has(lastTwo) ? labels.slice(-3).join('.') : lastTwo
+  const [second, top] = labels.slice(-2)
+  const lastTwo = `${second}.${top}`
+  const suffix = MULTI_LABEL_SUFFIXES.has(lastTwo) || (/^[a-z]{2}$/.test(top) && COUNTRY_SECOND_LEVELS.has(second))
+  return suffix ? labels.slice(-3).join('.') : lastTwo
 }
 
-/** A name fit for a button: control characters out, spaces collapsed, cut to `SELLER_LABEL_MAX`. */
+/**
+ * A name fit for a button: control, direction and invisible characters out,
+ * spaces collapsed, cut to `SELLER_LABEL_MAX` characters. Cut by code point,
+ * so an emoji at the cut is dropped whole rather than left half a pair.
+ */
 function labelOf(s: string | undefined): string {
-  const clean = (s ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, '').replace(/\s+/g, ' ').trim()
-  return clean.length > SELLER_LABEL_MAX ? `${clean.slice(0, SELLER_LABEL_MAX - 1).trimEnd()}…` : clean
+  const clean = (typeof s === 'string' ? s : '')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\ufff9-\ufffb]/g, '')
+    .replace(/\s+/g, ' ').trim()
+  const chars = Array.from(clean)
+  return chars.length > SELLER_LABEL_MAX ? `${chars.slice(0, SELLER_LABEL_MAX - 1).join('').trimEnd()}…` : clean
 }
 
 /** The handler's display name: `name`, else `display_name`, from its content JSON (NIP-89 metadata). */
@@ -539,7 +577,7 @@ function handlerPage(app: ListingApp, handler: FeedEvent, naddr: string): string
  * domain of the URL the button opens, never a name the event chose.
  */
 export function sellerLink(listing: Pick<FeedListing, 'keyService' | 'app'>, naddr: string, handler?: FeedEvent | null): SellerLink {
-  if (listing.app && handler) {
+  if (listing.app && handler && wellFormed(handler)) {
     const url = handlerPage(listing.app, handler, naddr)
     if (url) {
       const domain = registrableDomain(url)
@@ -770,11 +808,13 @@ export function createFeed(opts: FeedOptions): Feed {
   let batch: ReturnType<typeof setTimeout> | undefined
 
   /** What an event is: an object, a listing, or neither; each event read once. */
+  // An event that throws is neither: one bad event must not stop every emit after it.
+  const safely = <T>(read: () => T | null): T | null => { try { return read() } catch { return null } }
   const itemOf = (ev: FeedEvent): FeedItem | null => {
-    if (!parsed.has(ev.id)) parsed.set(ev.id, objectFromEvent(ev))
+    if (!parsed.has(ev.id)) parsed.set(ev.id, safely(() => objectFromEvent(ev)))
     const o = parsed.get(ev.id)
     if (o) return o
-    if (!listed.has(ev.id)) listed.set(ev.id, listingFromEvent(ev))
+    if (!listed.has(ev.id)) listed.set(ev.id, safely(() => listingFromEvent(ev)))
     return listed.get(ev.id) ?? null
   }
   const newestFirst = (a: FeedItem, b: FeedItem): number => b.createdAt - a.createdAt || (a.id < b.id ? -1 : 1)
@@ -818,6 +858,8 @@ export function createFeed(opts: FeedOptions): Feed {
         seenOn.set(ev.id, seen)
         const prevOldest = cursor.get(url)
         if (prevOldest === undefined || ev.created_at < prevOldest) cursor.set(url, ev.created_at)
+        // Counted toward the relay's page, so paging moves past it, but not held.
+        if (!wellFormed(ev)) return
         const d = ev.tags.find((t) => t[0] === 'd')?.[1]
         if (!d) return
         const key = `${ev.pubkey}:${d}`
