@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AUTH_DEADLINE_MS, CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
-  isDeleted, objectFromEvent, readCredit, readEach, type DeletionFilter, type FeedEvent, type FeedFilter, type FeedState, type ReadFilter, type Subscribe,
+  feedItems, isDeleted, isListing, listingFromEvent, listingPointer, objectFromEvent, readCredit, readEach,
+  type DeletionFilter, type FeedEvent, type FeedFilter, type FeedState, type ReadFilter, type Subscribe,
 } from './feed.js'
 import { toPayload } from './shards.js'
 
@@ -324,6 +325,154 @@ describe('deletions (NIP-09)', () => {
     await p
     expect(feed.state().objects.map((o) => o.d)).toEqual(['kept'])
     for (const f of seen) expect(Object.keys(f).filter((k) => k.startsWith('#')).length).toBeLessThanOrEqual(1)
+  })
+})
+
+/**
+ * An object for sale (NIP-FF-1, NIP-FF-2), signed with a throwaway key made
+ * for this test and thrown away. It has never been sent to a relay.
+ */
+const LISTING: FeedEvent & { sig: string } = {
+  kind: 33331,
+  created_at: 1792000000,
+  content: 'A brass orrery, three rings on a walnut base. Buy it to place it anywhere in cyberspace.',
+  tags: [
+    ['d', '6f1c2a8e-4b7d-4e0a-9c3f-2d5e8b1a7c40'],
+    ['encrypted', 'aes-256-gcm', 'dGVzdC1maXh0dXJlLWNpcGhlcnRleHQtbm90LXJlYWwtZGF0YQ==', 'https://keys.example.com/request-key'],
+    ['price', '2100', 'SATS'],
+    ['title', 'Brass Orrery'],
+    ['name', 'orrery'],
+    ['subject', '3D object'],
+    ['a', '31990:d7d8109ee43657ce6056ada4653006bbb641f31e50e85243681c2724507811ec:Fanfares'],
+    ['zap', '0000000000000000000000000000000000000000000000000000000000000001', 'wss://relay.example.com', '1'],
+    ['imeta', `url https://cdn.example.com/${'a1'.repeat(32)}.gif`, 'm image/gif', `x ${'a1'.repeat(32)}`, 'dim 320x320', 'alt A brass orrery turning on its base'],
+    ['imeta', `url https://cdn.example.com/${'b2'.repeat(32)}.png`, 'm image/png', `x ${'b2'.repeat(32)}`, 'dim 320x320', 'alt A brass orrery'],
+    ['alt', 'A 3D object for sale: Brass Orrery, 2100 sats'],
+  ],
+  pubkey: '64fbb11b3cf181df337405421b947e20a47b26bfdc41bee9eb85fe41d8f93de8',
+  id: 'ea2fe2ef7b08471b63d5d309d25b057bacf17b51e340fcd3cee5df2182398c7a',
+  sig: '43c40779fc636cee239dde9533c97002c22a89a21abea33c6b411f30ab8d4a306b5106d7b8482ea51919da246938518a7f3281298a5a96af48103c911350e32c',
+}
+
+/** The fixture with tags changed: `[name, ...]` replaces the first tag of that name, and `[name]` alone removes every one. */
+function changed(...edits: string[][]): FeedEvent {
+  let tags = LISTING.tags.map((t) => [...t])
+  for (const e of edits) {
+    const at = tags.findIndex((t) => t[0] === e[0])
+    if (e.length === 1) tags = tags.filter((t) => t[0] !== e[0])
+    else if (at >= 0) tags[at] = e
+    else tags.push(e)
+  }
+  return { ...LISTING, tags }
+}
+
+describe('objects for sale (NIP-FF-1 key service in encrypted[3])', () => {
+  it('reads a listing: title, price, key service, both pictures, alt, and what an naddr needs', () => {
+    const l = listingFromEvent(LISTING)!
+    expect(l).not.toBeNull()
+    expect(isListing(l)).toBe(true)
+    expect(l.type).toBe('listing')
+    expect(l.title).toBe('Brass Orrery')
+    expect(l.priceSats).toBe(2100)
+    expect(l.keyService).toBe('https://keys.example.com/request-key')
+    expect(l.preview).toEqual({ url: `https://cdn.example.com/${'a1'.repeat(32)}.gif`, mime: 'image/gif', width: 320, height: 320, sha256: 'a1'.repeat(32), alt: 'A brass orrery turning on its base' })
+    expect(l.thumb?.url).toBe(`https://cdn.example.com/${'b2'.repeat(32)}.png`)
+    expect(l.thumb?.mime).toBe('image/png')
+    expect(l.alt).toBe('A brass orrery turning on its base')
+    expect(l.text).toBe(LISTING.content)
+    expect(l.address).toBe(`33331:${LISTING.pubkey}:6f1c2a8e-4b7d-4e0a-9c3f-2d5e8b1a7c40`)
+    expect(listingPointer({ ...l, seen: ['wss://a', 'wss://b', 'wss://c', 'wss://d'] })).toEqual({ kind: 33331, pubkey: LISTING.pubkey, identifier: l.d, relays: ['wss://a', 'wss://b', 'wss://c'] })
+  })
+
+  it('falls back to the name tag for a title, and to the alt tag when no picture has alt text', () => {
+    const l = listingFromEvent(changed(['title'], ['imeta']))!
+    expect(l.title).toBe('orrery')
+    expect(l.preview).toBeUndefined()
+    expect(l.thumb).toBeUndefined()
+    expect(l.alt).toBe('A 3D object for sale: Brass Orrery, 2100 sats')
+  })
+
+  it('never reads a listing as geometry: objectFromEvent refuses it, even when its content parses as a payload', () => {
+    expect(objectFromEvent(LISTING)).toBeNull()
+    const looksLikeAShape = { ...LISTING, content: payload('decoy') }
+    expect(objectFromEvent(looksLikeAShape)).toBeNull()
+    expect(listingFromEvent(looksLikeAShape)?.text).toBe(payload('decoy'))
+  })
+
+  it('an object hidden at a place (encrypted[3] cyberspace:region) is still neither an object nor a listing', () => {
+    const hidden = changed(['encrypted', 'aes-256-gcm', 'x', 'cyberspace:region'])
+    expect(listingFromEvent(hidden)).toBeNull()
+    expect(objectFromEvent(hidden)).toBeNull()
+  })
+
+  it('refuses a malformed listing: no price, a price that is not a positive whole number of sats, http, no d', () => {
+    expect(listingFromEvent(changed(['price']))).toBeNull()
+    for (const bad of ['0', '-5', '1.5', '21e3', '', ' 21', '99999999999999999']) expect(listingFromEvent(changed(['price', bad, 'SATS'])), bad).toBeNull()
+    expect(listingFromEvent(changed(['price', '2100', 'USD']))).toBeNull()
+    expect(listingFromEvent(changed(['price', '2100']))?.priceSats).toBe(2100)
+    expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', 'x', 'http://keys.example.com/request-key']))).toBeNull()
+    expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', 'x', 'https://user:pw@keys.example.com/']))).toBeNull()
+    expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', 'x']))).toBeNull()
+    expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', 'x', 'not a url']))).toBeNull()
+    expect(listingFromEvent(changed(['d']))).toBeNull()
+    expect(listingFromEvent(changed(['d', '']))).toBeNull()
+    expect(listingFromEvent({ ...LISTING, kind: 30023 })).toBeNull()
+  })
+
+  it('shows only https pictures of an image type, and never an encrypted file', () => {
+    const only = (imeta: string[]): FeedEvent => ({ ...LISTING, tags: [...LISTING.tags.filter((t) => t[0] !== 'imeta'), ['imeta', ...imeta]] })
+    expect(listingFromEvent(only(['url http://cdn.example.com/a.gif', 'm image/gif']))?.preview).toBeUndefined()
+    expect(listingFromEvent(only(['url javascript:alert(1)', 'm image/gif']))?.preview).toBeUndefined()
+    expect(listingFromEvent(only(['url data:image/gif;base64,R0lG', 'm image/gif']))?.preview).toBeUndefined()
+    expect(listingFromEvent(only(['url https://cdn.example.com/a.svg', 'm image/svg+xml']))?.thumb).toBeUndefined()
+    expect(listingFromEvent(only(['url https://cdn.example.com/a.html', 'm text/html']))?.thumb).toBeUndefined()
+    expect(listingFromEvent(only(['url https://cdn.example.com/a.gif']))?.preview).toBeUndefined()
+    expect(listingFromEvent(only(['url https://cdn.example.com/a.gif.enc', 'm image/gif', 'encrypted aes-256-gcm']))?.preview).toBeUndefined()
+    expect(listingFromEvent(only(['url https://cdn.example.com/a.webp', 'm image/webp', 'dim 0x9']))?.thumb).toEqual({ url: 'https://cdn.example.com/a.webp', mime: 'image/webp' })
+    // A picture that is not https leaves the listing listed, without the picture.
+    expect(listingFromEvent(only(['url http://cdn.example.com/a.gif', 'm image/gif']))?.title).toBe('Brass Orrery')
+  })
+
+  it('the feed carries listings apart from objects, leaves hidden and malformed ones out, and leaves public objects as they were', async () => {
+    const pub = obj('chair', 1792000100)
+    const hidden = { ...changed(['encrypted', 'aes-256-gcm', 'x', 'cyberspace:region'], ['d', 'hid']), id: 'h'.padStart(64, '0') }
+    const http = { ...changed(['encrypted', 'aes-256-gcm', 'x', 'http://keys.example.com/'], ['d', 'plain']), id: 'p'.padStart(64, '0') }
+    const priceless = { ...changed(['price'], ['d', 'free']), id: 'f'.padStart(64, '0') }
+    const { subscribe } = relays({ 'wss://r': { events: [pub, LISTING, hidden, http, priceless] } })
+    const states: FeedState[] = []
+    const feed = createFeed({ relays: ['wss://r'], subscribe, onChange: (s) => states.push(s) })
+    const p = feed.more()
+    await vi.advanceTimersByTimeAsync(10)
+    await p
+    const s = feed.state()
+    expect(s.objects.map((o) => o.d)).toEqual(['chair'])
+    // A public object is read exactly as before: the same fields, no `type`, the same shape.
+    const { shard, ...rest } = s.objects[0]
+    const { shard: alone, ...want } = objectFromEvent(pub)!
+    expect(rest).toEqual({ ...want, seen: ['wss://r'] })
+    expect(shard.vertices).toEqual(alone.vertices)
+    expect(s.listings.map((l) => l.title)).toEqual(['Brass Orrery'])
+    expect(s.listings[0].seen).toEqual(['wss://r'])
+    expect(feedItems(s).map((i) => (isListing(i) ? `sale:${i.d}` : i.d))).toEqual(['chair', `sale:${LISTING.tags[0][1]}`])
+    expect(states.every((st) => Array.isArray(st.listings))).toBe(true)
+  })
+
+  it('a listing its author deleted is not shown, and a newer public version of the same address replaces it', async () => {
+    const d = LISTING.tags[0][1]
+    const del: FeedEvent = { id: 'e'.padStart(64, '0'), pubkey: LISTING.pubkey, created_at: LISTING.created_at + 1, kind: 5, tags: [['a', `33331:${LISTING.pubkey}:${d}`]], content: '' }
+    const run = async (events: FeedEvent[]): Promise<FeedState> => {
+      const subscribe: Subscribe = (_url, f, h) => { setTimeout(() => { for (const e of answer(events, f)) h.onevent(e); h.oneose() }, 0); return { close: () => {} } }
+      const feed = createFeed({ relays: ['r'], subscribe, onChange: () => {} })
+      const p = feed.more()
+      await vi.advanceTimersByTimeAsync(10)
+      await p
+      return feed.state()
+    }
+    expect((await run([LISTING, del])).listings).toEqual([])
+    const unsealed = { ...obj(d, LISTING.created_at + 5, LISTING.pubkey, 'orrery') }
+    const s = await run([LISTING, unsealed])
+    expect(s.listings).toEqual([])
+    expect(s.objects.map((o) => o.d)).toEqual([d])
   })
 })
 

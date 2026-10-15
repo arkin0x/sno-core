@@ -25,6 +25,11 @@
  * - **Deletions:** after each page, its authors' kind 5 deletions of what it
  *   brought, by address and by id (one tag filter each), and a deleted
  *   object is not shown (NIP-09, `isDeleted`).
+ * - **What a sale listing is:** `listingFromEvent`. A 33331 for sale on
+ *   Fanfares is partially encrypted (NIP-FF-1, DECK-0003 §3.4): its shape is
+ *   sealed until someone buys the key, and what is public is a title, a
+ *   price and a preview picture. The feed carries those as `listings`, apart
+ *   from `objects`, because a listing has no geometry to draw or place.
  *
  * Like parts.ts, this package does no networking: the client passes in how
  * to subscribe to one relay, and keeps its own pool, auth and relay list.
@@ -157,14 +162,183 @@ export function objectFromEvent(ev: FeedEvent): FeedObject | null {
   if (ev.kind !== SNO_KIND) return null
   const d = ev.tags.find((t) => t[0] === 'd')?.[1]
   if (!d) return null
-  // A hidden object (DECK-0003 §3.4) is sealed to a place: its content is a
-  // preview, not a payload, and it is not the feed's to show.
+  // A sealed object's content is a preview, not a payload. Sealed to a place
+  // (DECK-0003 §3.4), it is not the feed's to show; sealed for sale, it is a
+  // listing (listingFromEvent), with no shape until it is bought.
   if (ev.tags.some((t) => t[0] === 'encrypted')) return null
   let shard: ShardModel | null = null
   try { shard = fromPayload(JSON.parse(ev.content), `${ev.pubkey}:${d}`) } catch { return null }
   // An object may be nothing but the arrangement of others (§1.9 rule 13).
   if (!shard || (shard.vertices.length === 0 && !shard.parts?.length)) return null
   return { id: ev.id, pubkey: ev.pubkey, createdAt: ev.created_at, d, address: objectAddress(ev.pubkey, d), shard, event: ev }
+}
+
+/* --------------------------------------------------------------------------
+ * Objects for sale (NIP-FF-1, NIP-FF-2; DECK-0003 §3.4)
+ * ------------------------------------------------------------------------ */
+
+/** A picture a listing shows before it is bought: one public `imeta` (NIP-92). */
+export interface ListingImage {
+  /** Always `https:`. */
+  url: string
+  /** Always an image type: `image/gif` for the turntable, a still type for the thumbnail. */
+  mime: string
+  /** From the imeta's `dim`, `<width>x<height>`, when it has one. */
+  width?: number
+  height?: number
+  /** The imeta's `x`, the file's sha256, when it has one. */
+  sha256?: string
+  /** The imeta's `alt`. */
+  alt?: string
+}
+
+/**
+ * A 3D object for sale: a kind 33331 whose payload is sealed (NIP-FF-1) with
+ * a key a key service sells. Everything here is what the event shows in
+ * public; the shape is not, and nothing here was read from the ciphertext or
+ * from `content` as geometry.
+ */
+export interface FeedListing {
+  type: 'listing'
+  id: string
+  pubkey: string
+  createdAt: number
+  /** The `d` tag. */
+  d: string
+  /** `33331:<pubkey>:<d>`. */
+  address: string
+  /** The `title` tag, else the `name` tag, else empty. */
+  title: string
+  /** The `price` tag, a positive whole number of sats. */
+  priceSats: number
+  /** Element [3] of the `encrypted` tag: where the key is bought. Always `https:`. */
+  keyService: string
+  /** The turntable GIF. */
+  preview?: ListingImage
+  /** The still: a PNG, or another still image type. */
+  thumb?: ListingImage
+  /** The preview picture's alt text, else the event's `alt` tag. */
+  alt?: string
+  /** The event's public `content`: the preview text (NIP-FF-2). Never geometry. */
+  text: string
+  /** The event it was read from, as the relay sent it. */
+  event: FeedEvent
+  /** The relays it was read from (createFeed), for the naddr's relay hints. */
+  seen?: string[]
+}
+
+/** Something the feed shows: an object, or an object for sale. */
+export type FeedItem = FeedObject | FeedListing
+
+/** Whether a feed item is a listing (no geometry until bought) rather than an object. */
+export function isListing(item: FeedItem): item is FeedListing {
+  return (item as FeedListing).type === 'listing'
+}
+
+/**
+ * What an `naddr` (NIP-19) for a listing encodes: the kind, the author, the
+ * `d`, and up to three relays it was seen on. A client encodes it and opens
+ * the seller's page with it.
+ */
+export function listingPointer(l: Pick<FeedListing, 'pubkey' | 'd' | 'seen'>): { kind: number; pubkey: string; identifier: string; relays: string[] } {
+  return { kind: SNO_KIND, pubkey: l.pubkey, identifier: l.d, relays: (l.seen ?? []).slice(0, 3) }
+}
+
+/** `s` when it is an `https:` URL with no credentials in it, else null. */
+function httpsUrl(s: string | undefined): string | null {
+  if (!s) return null
+  try {
+    const u = new URL(s)
+    return u.protocol === 'https:' && !u.username && !u.password ? s : null
+  } catch {
+    return null
+  }
+}
+
+/** Still image types a thumbnail may be. SVG is left out: it is a document, not a picture. */
+const STILL = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif'])
+
+/** The public pictures among an event's imeta tags: the first GIF and the first still. */
+function listingImages(tags: readonly string[][]): { preview?: ListingImage; thumb?: ListingImage } {
+  const out: { preview?: ListingImage; thumb?: ListingImage } = {}
+  for (const t of tags) {
+    if (t[0] !== 'imeta') continue
+    const f = new Map<string, string>()
+    for (const part of t.slice(1)) {
+      const at = part.indexOf(' ')
+      const key = at < 0 ? part : part.slice(0, at)
+      if (!f.has(key)) f.set(key, at < 0 ? '' : part.slice(at + 1).trim())
+    }
+    // An encrypted file (NIP-FF-1 §Encrypted Files) is not a preview.
+    if (f.has('encrypted')) continue
+    const url = httpsUrl(f.get('url'))
+    const mime = (f.get('m') ?? '').toLowerCase()
+    if (!url) continue
+    const gif = mime === 'image/gif'
+    if (!gif && !STILL.has(mime)) continue
+    if (gif ? out.preview : out.thumb) continue
+    const img: ListingImage = { url, mime }
+    const dim = /^(\d{1,5})x(\d{1,5})$/.exec(f.get('dim') ?? '')
+    if (dim && +dim[1] > 0 && +dim[2] > 0) { img.width = +dim[1]; img.height = +dim[2] }
+    const x = f.get('x')
+    if (x && /^[0-9a-f]{64}$/.test(x)) img.sha256 = x
+    const alt = f.get('alt')
+    if (alt) img.alt = alt
+    if (gif) out.preview = img
+    else out.thumb = img
+  }
+  return out
+}
+
+/**
+ * The listing an event carries, or null when it is not one.
+ *
+ * A kind 33331 with an `encrypted` tag is one of two things, told apart by
+ * element [3]: `cyberspace:region` is an object hidden at a place (DECK-0003
+ * §3.4), which no feed shows; an `https:` key service URL is an object for
+ * sale (NIP-FF-1), which it does, when the event also has a `d` and a `price`
+ * of a positive whole number of sats. Anything else is neither and is left
+ * out. `content` is the preview text and is never read as a payload.
+ */
+export function listingFromEvent(ev: FeedEvent): FeedListing | null {
+  if (ev.kind !== SNO_KIND) return null
+  const d = ev.tags.find((t) => t[0] === 'd')?.[1]
+  if (!d) return null
+  const enc = ev.tags.find((t) => t[0] === 'encrypted')
+  if (!enc) return null
+  const keyService = httpsUrl(enc[3])
+  if (!keyService) return null
+  const price = ev.tags.find((t) => t[0] === 'price')
+  if (!price || !/^[1-9]\d{0,15}$/.test(price[1] ?? '')) return null
+  const priceSats = Number(price[1])
+  if (!Number.isSafeInteger(priceSats)) return null
+  // NIP-FF-2: element [2] is the literal SATS. Another unit read as sats would misstate the price.
+  if (price[2] !== undefined && price[2].toUpperCase() !== 'SATS') return null
+  const tag = (name: string): string => (ev.tags.find((t) => t[0] === name)?.[1] ?? '').trim()
+  const { preview, thumb } = listingImages(ev.tags)
+  const alt = preview?.alt ?? thumb?.alt ?? (tag('alt') || undefined)
+  const listing: FeedListing = {
+    type: 'listing',
+    id: ev.id,
+    pubkey: ev.pubkey,
+    createdAt: ev.created_at,
+    d,
+    address: objectAddress(ev.pubkey, d),
+    title: tag('title') || tag('name'),
+    priceSats,
+    keyService,
+    text: typeof ev.content === 'string' ? ev.content : '',
+    event: ev,
+  }
+  if (preview) listing.preview = preview
+  if (thumb) listing.thumb = thumb
+  if (alt) listing.alt = alt
+  return listing
+}
+
+/** Objects and listings as one list, newest first, the order the feed shows them in. */
+export function feedItems(state: Pick<FeedState, 'objects' | 'listings'>): FeedItem[] {
+  return [...state.objects, ...state.listings].sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : 1))
 }
 
 /* --------------------------------------------------------------------------
@@ -301,6 +475,8 @@ async function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
 export interface FeedState {
   /** Newest first, one per address. */
   objects: FeedObject[]
+  /** Objects for sale (listingFromEvent), newest first, one per address. `feedItems` merges the two. */
+  listings: FeedListing[]
   /** A page is being read. */
   loading: boolean
   /** Every relay has been read to its end: there is nothing older. */
@@ -347,6 +523,7 @@ export function createFeed(opts: FeedOptions): Feed {
   const size = opts.pageSize ?? FEED_PAGE
   const newest = new Map<string, FeedEvent>()
   const parsed = new Map<string, FeedObject | null>()
+  const listed = new Map<string, FeedListing | null>()
   /** Which relays sent each event. */
   const seenOn = new Map<string, Set<string>>()
   /** Each relay's oldest event so far; absent before its first page. */
@@ -371,17 +548,28 @@ export function createFeed(opts: FeedOptions): Feed {
   const reading = new Set<ReadHandle>()
   let batch: ReturnType<typeof setTimeout> | undefined
 
-  const objects = (): FeedObject[] => {
-    const out: FeedObject[] = []
-    for (const ev of newest.values()) {
-      if (!parsed.has(ev.id)) parsed.set(ev.id, objectFromEvent(ev))
-      const o = parsed.get(ev.id)
-      // An object its author deleted is not shown.
-      if (o && !isDeleted(o, deletions)) out.push({ ...o, seen: [...(seenOn.get(ev.id) ?? [])] })
-    }
-    return out.sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : 1))
+  /** What an event is: an object, a listing, or neither; each event read once. */
+  const itemOf = (ev: FeedEvent): FeedItem | null => {
+    if (!parsed.has(ev.id)) parsed.set(ev.id, objectFromEvent(ev))
+    const o = parsed.get(ev.id)
+    if (o) return o
+    if (!listed.has(ev.id)) listed.set(ev.id, listingFromEvent(ev))
+    return listed.get(ev.id) ?? null
   }
-  const state = (): FeedState => ({ objects: objects(), loading, exhausted: open.size === 0 })
+  const newestFirst = (a: FeedItem, b: FeedItem): number => b.createdAt - a.createdAt || (a.id < b.id ? -1 : 1)
+  const state = (): FeedState => {
+    const objects: FeedObject[] = []
+    const listings: FeedListing[] = []
+    for (const ev of newest.values()) {
+      const item = itemOf(ev)
+      // What its author deleted is not shown.
+      if (!item || isDeleted(item, deletions)) continue
+      const seen = [...(seenOn.get(ev.id) ?? [])]
+      if (isListing(item)) listings.push({ ...item, seen })
+      else objects.push({ ...item, seen })
+    }
+    return { objects: objects.sort(newestFirst), listings: listings.sort(newestFirst), loading, exhausted: open.size === 0 }
+  }
   const emit = (): void => { batch = undefined; if (!closed) opts.onChange(state()) }
 
   const more = async (): Promise<void> => {
@@ -455,12 +643,12 @@ export function createFeed(opts: FeedOptions): Feed {
     // The authors' deletions of what this page brought, from the relays that
     // answered it: an object deleted by its author is hidden (NIP-09).
     const answered = [...new Set(results.flatMap((ends) => [...ends].filter(([url, how]) => how === 'eose' || (counts.get(url) ?? 0) > 0).map(([url]) => url)))]
-    const unchecked: FeedObject[] = []
+    const unchecked: FeedItem[] = []
     for (const ev of newest.values()) {
       if (checked.has(ev.id)) continue
       checked.add(ev.id)
-      const o = parsed.get(ev.id) ?? objectFromEvent(ev)
-      if (o) unchecked.push(o)
+      const item = itemOf(ev)
+      if (item) unchecked.push(item)
     }
     if (answered.length > 0 && unchecked.length > 0 && !closed) {
       const reads = deletionFilters(unchecked).map((f) => {

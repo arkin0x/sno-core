@@ -39,7 +39,7 @@ Section numbers in the comments here refer to that deck.
 | `importFile` | A 3D file picked by a person as a shard: PLY, STL, OBJ with its MTL, glTF or GLB, MagicaVoxel VOX. Format detection, size and time caps, and the request and answer a client's Web Worker passes |
 | `meshToShard` | Any mesh as an ordinary shard: fitted to the grid, quantized onto the lattice and welded, cleaned of faces with no area, colors snapped to the palette, and simplified by vertex clustering until the payload fits the byte budget |
 | `mesh`, `ply`, `stl`, `obj`, `gltf`, `vox` | The mesh every importer produces, the untrusted-input rules they share, and one pure parser per format. No dependencies and no network: a glTF buffer is read from the file, a data URI, or a file picked with it, never fetched |
-| `feed` | Published objects read from relays (the Shard Feed): the filter (never a tag filter), each relay read on its own with deadlines, newest per address, paging each relay to its own end, and the proposed credit tag for a copy. Networking is the client's, passed in |
+| `feed` | Published objects read from relays (the Shard Feed): the filter (never a tag filter), each relay read on its own with deadlines, newest per address, paging each relay to its own end, objects for sale (`listingFromEvent`: an encrypted 33331 whose `encrypted` element [3] is an `https:` NIP-FF-1 key service, with a `d` and a price in sats, carried as `listings` with its title, price and preview pictures, never as geometry; one hidden at a place, `cyberspace:region`, is still left out), and the proposed credit tag for a copy. Networking is the client's, passed in |
 
 ## What is deliberately not in it
 
