@@ -109,6 +109,9 @@ describe('payload', () => {
       expect(fromPayload(p, 'x')).not.toBeNull()
     }
     expect(toPayload({ ...tri, name: ' tri ' }).name).toBe(' tri ')
+    // A model stored before names were required may have none at all.
+    const { name: _n, ...unnamed } = tri
+    expect(toPayload(unnamed as ShardModel).name).toBe(PLACEHOLDER_NAME)
   })
 
   it('refuses an optional field written as null, except extent, which means 8 (DECK-0003 §1.1)', () => {
