@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AUTH_DEADLINE_MS, CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
-  feedItems, isDeleted, isListing, listingFromEvent, listingPointer, objectFromEvent, readCredit, readEach,
+  FANFARES_KEY_SERVICES, feedItems, isDeleted, isFanfaresKeyService, isListing, listingFromEvent, listingPointer, objectFromEvent, readCredit, readEach,
   type DeletionFilter, type FeedEvent, type FeedFilter, type FeedState, type ReadFilter, type Subscribe,
 } from './feed.js'
 import { toPayload } from './shards.js'
@@ -338,7 +338,7 @@ const LISTING: FeedEvent & { sig: string } = {
   content: 'A brass orrery, three rings on a walnut base. Buy it to place it anywhere in cyberspace.',
   tags: [
     ['d', '6f1c2a8e-4b7d-4e0a-9c3f-2d5e8b1a7c40'],
-    ['encrypted', 'aes-256-gcm', 'dGVzdC1maXh0dXJlLWNpcGhlcnRleHQtbm90LXJlYWwtZGF0YQ==', 'https://keys.example.com/request-key'],
+    ['encrypted', 'aes-256-gcm', 'dGVzdC1maXh0dXJlLWNpcGhlcnRleHQtbm90LXJlYWwtZGF0YQ==', 'https://api.fanfares.live/request-key'],
     ['price', '2100', 'SATS'],
     ['title', 'Brass Orrery'],
     ['name', 'orrery'],
@@ -349,9 +349,9 @@ const LISTING: FeedEvent & { sig: string } = {
     ['imeta', `url https://cdn.example.com/${'b2'.repeat(32)}.png`, 'm image/png', `x ${'b2'.repeat(32)}`, 'dim 320x320', 'alt A brass orrery'],
     ['alt', 'A 3D object for sale: Brass Orrery, 2100 sats'],
   ],
-  pubkey: '64fbb11b3cf181df337405421b947e20a47b26bfdc41bee9eb85fe41d8f93de8',
-  id: 'ea2fe2ef7b08471b63d5d309d25b057bacf17b51e340fcd3cee5df2182398c7a',
-  sig: '43c40779fc636cee239dde9533c97002c22a89a21abea33c6b411f30ab8d4a306b5106d7b8482ea51919da246938518a7f3281298a5a96af48103c911350e32c',
+  pubkey: '54cf3d41a8c1a0c6d3a2134ecef5fe43a51ff8328014244dd38f2bc9f543f241',
+  id: '00d52d317f8b9d12853775c2ecf87025ff3d1a91ee5590924d79ec3fffff0964',
+  sig: 'd84182210fb628b498dcb658a8ca8cb77ccd2476ea7ee463751ec9e2583e1fb3d250813a900a9707fd929eaea59b9d6e67b7f176da636fc1ed88d6ff9d0081fb',
 }
 
 /** The fixture with tags changed: `[name, ...]` replaces the first tag of that name, and `[name]` alone removes every one. */
@@ -374,7 +374,7 @@ describe('objects for sale (NIP-FF-1 key service in encrypted[3])', () => {
     expect(l.type).toBe('listing')
     expect(l.title).toBe('Brass Orrery')
     expect(l.priceSats).toBe(2100)
-    expect(l.keyService).toBe('https://keys.example.com/request-key')
+    expect(l.keyService).toBe('https://api.fanfares.live/request-key')
     expect(l.preview).toEqual({ url: `https://cdn.example.com/${'a1'.repeat(32)}.gif`, mime: 'image/gif', width: 320, height: 320, sha256: 'a1'.repeat(32), alt: 'A brass orrery turning on its base' })
     expect(l.thumb?.url).toBe(`https://cdn.example.com/${'b2'.repeat(32)}.png`)
     expect(l.thumb?.mime).toBe('image/png')
@@ -409,7 +409,11 @@ describe('objects for sale (NIP-FF-1 key service in encrypted[3])', () => {
     expect(listingFromEvent(changed(['price']))).toBeNull()
     for (const bad of ['0', '-5', '1.5', '21e3', '', ' 21', '99999999999999999']) expect(listingFromEvent(changed(['price', bad, 'SATS'])), bad).toBeNull()
     expect(listingFromEvent(changed(['price', '2100', 'USD']))).toBeNull()
-    expect(listingFromEvent(changed(['price', '2100']))?.priceSats).toBe(2100)
+    // The unit is required and is the literal SATS, as the Worker requires.
+    for (const unit of [undefined, 'sats', 'Sats', 'SAT', 'BTC']) expect(listingFromEvent(changed(unit === undefined ? ['price', '2100'] : ['price', '2100', unit])), String(unit)).toBeNull()
+    expect(listingFromEvent({ ...LISTING, tags: [...LISTING.tags, ['price', '1', 'SATS']] })).toBeNull()
+    expect(listingFromEvent(changed(['price', '9007199254740991', 'SATS']))?.priceSats).toBe(9007199254740991)
+    expect(listingFromEvent(changed(['price', '9007199254740992', 'SATS']))).toBeNull()
     expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', 'x', 'http://keys.example.com/request-key']))).toBeNull()
     expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', 'x', 'https://user:pw@keys.example.com/']))).toBeNull()
     expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', 'x']))).toBeNull()
@@ -417,6 +421,36 @@ describe('objects for sale (NIP-FF-1 key service in encrypted[3])', () => {
     expect(listingFromEvent(changed(['d']))).toBeNull()
     expect(listingFromEvent(changed(['d', '']))).toBeNull()
     expect(listingFromEvent({ ...LISTING, kind: 30023 })).toBeNull()
+  })
+
+  it('lists only what Fanfares sells: its own key service, compared as the Worker compares it', () => {
+    const at = (url: string): FeedEvent => changed(['encrypted', 'aes-256-gcm', 'dGVzdC1maXh0dXJlLWNpcGhlcnRleHQtbm90LXJlYWwtZGF0YQ==', url])
+    for (const ok of ['https://api.fanfares.live/request-key', 'https://staging.api.fanfares.live/request-key', 'https://API.Fanfares.Live/request-key', 'https://api.fanfares.live:443/request-key', 'https://api.fanfares.live/request-key/']) {
+      expect(isFanfaresKeyService(ok), ok).toBe(true)
+      expect(listingFromEvent(at(ok))?.keyService, ok).toBe(ok)
+    }
+    for (const bad of [
+      'https://keys.example.com/request-key', 'https://api.fanfares.live.example.com/request-key', 'https://evil.example/api.fanfares.live/request-key',
+      'http://api.fanfares.live/request-key', 'https://api.fanfares.live/request-key?x=1', 'https://api.fanfares.live/request-key#x',
+      'https://user:pass@api.fanfares.live/request-key', 'https://api.fanfares.live/other', 'http://localhost:8787/request-key', 'cyberspace:region', 'request-key',
+    ]) {
+      expect(isFanfaresKeyService(bad), bad).toBe(false)
+      expect(listingFromEvent(at(bad)), bad).toBeNull()
+    }
+    expect(FANFARES_KEY_SERVICES).toEqual(['https://api.fanfares.live/request-key', 'https://staging.api.fanfares.live/request-key'])
+  })
+
+  it('refuses what the Worker would not sell: two encrypted tags, another cipher, no ciphertext, a d that is not one UUIDv4, no zap', () => {
+    const enc = LISTING.tags.find((t) => t[0] === 'encrypted')!
+    // A second encrypted tag naming a place: hidden, never a listing, whichever comes first.
+    expect(listingFromEvent({ ...LISTING, tags: [...LISTING.tags, ['encrypted', 'aes-256-gcm', 'x', 'cyberspace:region']] })).toBeNull()
+    expect(listingFromEvent({ ...LISTING, tags: [['encrypted', 'aes-256-gcm', 'x', 'cyberspace:region'], ...LISTING.tags] })).toBeNull()
+    expect(listingFromEvent(changed(['encrypted', 'chacha20', enc[2], enc[3]]))).toBeNull()
+    for (const ct of ['', 'not base64!', 'dGVzdA==', 'dGVzdC1maXh0dXJlLWNpcGhlcnRleHQtbm90LXJlYWwtZGF0YQ']) expect(listingFromEvent(changed(['encrypted', 'aes-256-gcm', ct, enc[3]])), ct).toBeNull()
+    for (const d of ['chair', '6f1c2a8e-4b7d-1e0a-9c3f-2d5e8b1a7c40', '6f1c2a8e-4b7d-4e0a-9c3f-2d5e8b1a7c40x', 'x'.repeat(4000)]) expect(listingFromEvent(changed(['d', d])), d.slice(0, 40)).toBeNull()
+    expect(listingFromEvent({ ...LISTING, tags: [...LISTING.tags, ['d', '7a1c2a8e-4b7d-4e0a-9c3f-2d5e8b1a7c40']] })).toBeNull()
+    expect(listingFromEvent(changed(['zap']))).toBeNull()
+    expect(listingFromEvent(changed(['zap', '']))).toBeNull()
   })
 
   it('shows only https pictures of an image type, and never an encrypted file', () => {

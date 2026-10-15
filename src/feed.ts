@@ -211,7 +211,7 @@ export interface FeedListing {
   title: string
   /** The `price` tag, a positive whole number of sats. */
   priceSats: number
-  /** Element [3] of the `encrypted` tag: where the key is bought. Always `https:`. */
+  /** Element [3] of the `encrypted` tag: where the key is bought. Always one of `FANFARES_KEY_SERVICES`. */
   keyService: string
   /** The turntable GIF. */
   preview?: ListingImage
@@ -244,16 +244,52 @@ export function listingPointer(l: Pick<FeedListing, 'pubkey' | 'd' | 'seen'>): {
   return { kind: SNO_KIND, pubkey: l.pubkey, identifier: l.d, relays: (l.seen ?? []).slice(0, 3) }
 }
 
-/** `s` when it is an `https:` URL with no credentials in it, else null. */
+/** `s` as the URL parser writes it when it is an `https:` URL with no credentials in it, else null. */
 function httpsUrl(s: string | undefined): string | null {
   if (!s) return null
   try {
     const u = new URL(s)
-    return u.protocol === 'https:' && !u.username && !u.password ? s : null
+    return u.protocol === 'https:' && !u.username && !u.password ? u.href : null
   } catch {
     return null
   }
 }
+
+/**
+ * The key services Fanfares publishes in element [3] of an `encrypted` tag:
+ * the `/request-key` route of its production and its staging Worker
+ * (fanfares-workers `FANFARES_KEY_SERVICE_URLS`). Both derive keys from the
+ * same secrets, so either one sells any Fanfares object.
+ */
+export const FANFARES_KEY_SERVICES: readonly string[] = [
+  'https://api.fanfares.live/request-key',
+  'https://staging.api.fanfares.live/request-key',
+]
+
+/** A key service URL in the form the Worker compares: no credentials, query or fragment; host lowercased, default port and trailing slash dropped. */
+function keyServiceForm(s: string): string | null {
+  let u: URL
+  try { u = new URL(s.trim()) } catch { return null }
+  if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash) return null
+  return `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}`
+}
+
+/**
+ * Whether element [3] of an `encrypted` tag names the Fanfares key service,
+ * compared as the Worker compares it. Any other key service is not one
+ * Fanfares sells keys for, so a BUY ON FANFARES for it would sell nothing.
+ */
+export function isFanfaresKeyService(s: string | undefined): boolean {
+  const form = s ? keyServiceForm(s) : null
+  return form !== null && FANFARES_KEY_SERVICES.some((k) => keyServiceForm(k) === form)
+}
+
+/** NIP-FF-2: the `d` of a Fanfares event is a UUIDv4. */
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+/** Canonical padded base64. */
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+/** NIP-FF-1 `aes-256-gcm`: a 12-byte IV, a 16-byte tag, and at least one byte of payload. */
+const MIN_CIPHERTEXT_BYTES = 12 + 16 + 1
 
 /** Still image types a thumbnail may be. SVG is left out: it is a document, not a picture. */
 const STILL = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif'])
@@ -295,25 +331,39 @@ function listingImages(tags: readonly string[][]): { preview?: ListingImage; thu
  *
  * A kind 33331 with an `encrypted` tag is one of two things, told apart by
  * element [3]: `cyberspace:region` is an object hidden at a place (DECK-0003
- * §3.4), which no feed shows; an `https:` key service URL is an object for
- * sale (NIP-FF-1), which it does, when the event also has a `d` and a `price`
- * of a positive whole number of sats. Anything else is neither and is left
- * out. `content` is the preview text and is never read as a payload.
+ * §3.4), which no feed shows; the Fanfares key service
+ * (`FANFARES_KEY_SERVICES`) is an object for sale (NIP-FF-1), which it does,
+ * when the event is in the shape the Fanfares Worker sells (NIP-FF-2): one
+ * `aes-256-gcm` `encrypted` tag with its ciphertext, one UUIDv4 `d`, one
+ * `["price", "<positive whole sats>", "SATS"]` and a `zap` recipient.
+ * Anything else, another key service included, is neither and is left out.
+ * `content` is the preview text and is never read as a payload.
  */
 export function listingFromEvent(ev: FeedEvent): FeedListing | null {
   if (ev.kind !== SNO_KIND) return null
-  const d = ev.tags.find((t) => t[0] === 'd')?.[1]
-  if (!d) return null
-  const enc = ev.tags.find((t) => t[0] === 'encrypted')
-  if (!enc) return null
-  const keyService = httpsUrl(enc[3])
-  if (!keyService) return null
-  const price = ev.tags.find((t) => t[0] === 'price')
-  if (!price || !/^[1-9]\d{0,15}$/.test(price[1] ?? '')) return null
-  const priceSats = Number(price[1])
+  // The shape the Fanfares Worker sells (fanfares-workers validateSnoObjectForSale),
+  // checked the same way here, so no card offers what Fanfares would refuse to sell.
+  const encs = ev.tags.filter((t) => t[0] === 'encrypted')
+  if (encs.length !== 1) return null
+  const [, scheme, ciphertext, keyService] = encs[0]
+  // cyberspace:region (hidden at a place), a missing [3], or anyone else's key service.
+  if (!isFanfaresKeyService(keyService)) return null
+  if (scheme !== 'aes-256-gcm') return null
+  if (typeof ciphertext !== 'string' || !BASE64.test(ciphertext)) return null
+  if ((ciphertext.length / 4) * 3 - (ciphertext.endsWith('==') ? 2 : ciphertext.endsWith('=') ? 1 : 0) < MIN_CIPHERTEXT_BYTES) return null
+  // One UUIDv4 d (NIP-FF-2). It also keeps the naddr short: nip19 cannot encode an identifier over 255 bytes, and throws on a long enough one.
+  const ds = ev.tags.filter((t) => t[0] === 'd')
+  if (ds.length !== 1 || !UUID_V4.test(ds[0][1] ?? '')) return null
+  const d = ds[0][1]
+  // One price, ["price", "<positive whole sats>", "SATS"], the literal SATS (NIP-FF-2): another unit read as sats would misstate the price.
+  const prices = ev.tags.filter((t) => t[0] === 'price')
+  if (prices.length !== 1) return null
+  const [, amount, unit] = prices[0]
+  if (!/^[1-9]\d{0,15}$/.test(amount ?? '') || unit !== 'SATS') return null
+  const priceSats = Number(amount)
   if (!Number.isSafeInteger(priceSats)) return null
-  // NIP-FF-2: element [2] is the literal SATS. Another unit read as sats would misstate the price.
-  if (price[2] !== undefined && price[2].toUpperCase() !== 'SATS') return null
+  // Someone to pay (NIP-FF-2: at least one zap tag).
+  if (!ev.tags.some((t) => t[0] === 'zap' && !!t[1])) return null
   const tag = (name: string): string => (ev.tags.find((t) => t[0] === name)?.[1] ?? '').trim()
   const { preview, thumb } = listingImages(ev.tags)
   const alt = preview?.alt ?? thumb?.alt ?? (tag('alt') || undefined)
