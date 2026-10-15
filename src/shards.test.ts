@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { TICKS_PER_UNIT, expandFaceColors, flatten, fromPayload, newShard, normalizeStored, packFaceColors, packTicks, ticksOf, toPayload, toRender, unitsLabel, unpackFaceColors, unpackTicks, validFace, validPoint, vertexAt, type ShardModel } from './shards.js'
+import { PLACEHOLDER_NAME, TICKS_PER_UNIT, blankName, expandFaceColors, flatten, fromPayload, newShard, normalizeStored, packFaceColors, packTicks, ticksOf, toPayload, toRender, unitsLabel, unpackFaceColors, unpackTicks, validFace, validPoint, vertexAt, type ShardModel } from './shards.js'
 import { BUILT_IN, indexOf, readPalette, remap, resolvePalette } from './snoPalette.js'
 
 const tri: ShardModel = {
@@ -85,6 +85,49 @@ describe('payload', () => {
     // Near, not exact, and every channel is a palette value.
     expect(Math.abs(got[0] - 0.8039215686274510)).toBeLessThan(0.15)
     for (const channel of got) expect(Math.round(channel * 255) / 255).toBeCloseTo(channel, 6)
+  })
+
+  it('requires a name that is not blank, and truncates a long one (DECK-0003 §1.1)', () => {
+    const p = toPayload(tri) as unknown as Record<string, unknown>
+    const { name: _name, ...nameless } = p
+    expect(fromPayload(nameless, 'x')).toBeNull()
+    for (const name of [7, null, '', '   ', ' \t\n', '\u3000', '\u00a0\u2028']) {
+      expect(fromPayload({ ...p, name }, 'x'), JSON.stringify(name)).toBeNull()
+    }
+    // U+FEFF is not whitespace under the deck, though trim() strips it.
+    expect(fromPayload({ ...p, name: '\ufeff' }, 'x')?.name).toBe('\ufeff')
+    expect(fromPayload({ ...p, name: ' x ' }, 'x')?.name).toBe(' x ')
+    expect(fromPayload({ ...p, name: 'n'.repeat(100) }, 'x')?.name).toBe('n'.repeat(64))
+  })
+
+  it('writes the placeholder for a blank name, so a writer never publishes one every reader refuses', () => {
+    expect(blankName('')).toBe(true)
+    expect(blankName('tri')).toBe(false)
+    for (const name of ['', '  ', '\t']) {
+      const p = toPayload({ ...tri, name })
+      expect(p.name).toBe(PLACEHOLDER_NAME)
+      expect(fromPayload(p, 'x')).not.toBeNull()
+    }
+    expect(toPayload({ ...tri, name: ' tri ' }).name).toBe(' tri ')
+  })
+
+  it('refuses an optional field written as null, except extent, which means 8 (DECK-0003 §1.1)', () => {
+    const p = toPayload(tri) as unknown as Record<string, unknown>
+    for (const field of ['ticks', 'palette', 'facecolors', 'up', 'spin', 'refs', 'parts']) {
+      expect(fromPayload({ ...p, [field]: null }, 'x'), field).toBeNull()
+    }
+    expect(fromPayload({ ...p, extent: null }, 'x')?.extent).toBe(8)
+  })
+
+  it('takes coordinates and face indices only as JSON integers, never through Number()', () => {
+    // §1.9 rules 6 and 8: "1", true and null are not integers, though Number()
+    // would make each of them one.
+    const p = toPayload(tri)
+    for (const bad of ['1', true, null, '0x1', [1]]) {
+      const vertices = p.vertices.map((v, i) => (i === 1 ? [bad, 0, 0] : v))
+      expect(fromPayload({ ...p, vertices }, 'x'), `vertex ${JSON.stringify(bad)}`).toBeNull()
+      expect(fromPayload({ ...p, faces: [[0, bad, 2]] }, 'x'), `face ${JSON.stringify(bad)}`).toBeNull()
+    }
   })
 
   it('rejects a colour that is not an index into the palette', () => {
@@ -290,7 +333,15 @@ describe('face colours (DECK-0003 §1.4a)', () => {
   it('refuses entries that expand to the wrong number of faces', () => {
     expect(unpackFaceColors([7, -5], 2, BUILT_IN)).toBeNull()
     expect(unpackFaceColors([7], 2, BUILT_IN)).toBeNull()
-    expect(unpackFaceColors([], 0, BUILT_IN)).toBeNull()
+    expect(unpackFaceColors([], 2, BUILT_IN)).toBeNull()
+  })
+
+  it('reads an empty list as the colours of no faces', () => {
+    // One colour per face, and there are none: the reference accepts it, and
+    // so does a reader (DECK-0003 §1.4a).
+    expect(unpackFaceColors([], 0, BUILT_IN)).toEqual([])
+    const bare = { ...toPayload({ ...tri, faces: [] }), facecolors: [] }
+    expect(fromPayload(bare, 'x')?.facecolors).toEqual([])
   })
 
   it('refuses a fractional entry, junk, and an index past the palette', () => {

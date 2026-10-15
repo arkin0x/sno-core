@@ -152,11 +152,23 @@ export function objectAddress(pubkey: string, d: string): string {
   return `${SNO_KIND}:${pubkey}:${d}`
 }
 
+/**
+ * An object's `d`, or null when it has none a reader may accept (DECK-0003
+ * §3.1): no `d` tag, or an empty one. The first `d` tag is the one that
+ * counts, as NIP-01 reads it. A kind 33331 without one is refused, hidden or
+ * not, because a relay files every d-less object from one author under the
+ * one address `33331:<pubkey>:`, each replacing the last.
+ */
+export function objectD(ev: Pick<FeedEvent, 'tags'>): string | null {
+  const d = ev.tags.find((t) => t[0] === 'd')?.[1]
+  return typeof d === 'string' && d !== '' ? d : null
+}
+
 /** The object an event carries, or null when it is not one or is malformed. */
 export function objectFromEvent(ev: FeedEvent): FeedObject | null {
   if (ev.kind !== SNO_KIND) return null
-  const d = ev.tags.find((t) => t[0] === 'd')?.[1]
-  if (!d) return null
+  const d = objectD(ev)
+  if (d === null) return null
   // A hidden object (DECK-0003 §3.4) is sealed to a place: its content is a
   // preview, not a payload, and it is not the feed's to show.
   if (ev.tags.some((t) => t[0] === 'encrypted')) return null
