@@ -7,8 +7,9 @@
  * file across again; the `version` field says which one this is.
  *
  * Each vector is an event. This reads it the way ONOSENDAI and snocrash do:
- * the content through JSON.parse and `fromPayload`, and a kind 33331 sealed
- * to a place through `objectFromEvent`, which declines it. It then compares
+ * a kind 33331 with no `d`, or an empty one, is refused through `objectD`
+ * (§3.1); the content goes through JSON.parse and `fromPayload`; and a kind
+ * 33331 sealed to a place goes through `objectFromEvent`, which declines it. It then compares
  * what came back with what the reference says, in the reference's frame
  * (DECK-0003 §2), which is the model frame with Z negated.
  *
@@ -19,7 +20,7 @@
 
 import { describe, expect, it } from 'vitest'
 import raw from '../vectors/sno-vectors.json' with { type: 'json' }
-import { objectFromEvent, type FeedEvent } from './feed.js'
+import { objectD, objectFromEvent, type FeedEvent } from './feed.js'
 import { fromPayload, mirrorTurn, ticksOf, type ShardModel } from './shards.js'
 import type { PaletteEvent } from './snoPalette.js'
 
@@ -39,22 +40,13 @@ const doc = raw as unknown as { version: number; vectors: Vector[] }
  * Each is a finding to settle in the spec or here, not a bug to hide.
  */
 const DIVERGES: Record<string, string> = {
-  // fromPayload reads a vertex with `map(Number)` and a face the same way, so
-  // a string, a boolean or null that Number() turns into an integer passes.
-  // The reference requires JSON integers (§1.9 rules 6 and 8).
-  'invalid/vertex-string': 'a vertex coordinate "1" is coerced to 1 and accepted',
-  'invalid/vertex-boolean': 'a vertex coordinate true is coerced to 1 and accepted',
-  'invalid/vertex-null': 'a vertex coordinate null is coerced to 0 and accepted',
-  'invalid/face-string': 'a face index "1" is coerced to 1 and accepted',
-  // unpackFaceColors refuses an empty array outright; the reference accepts
-  // [] when there are no faces, since it expands to one index per face.
-  'valid/facecolors-empty-no-faces': 'facecolors [] with no faces is refused',
   // neededExtent grows the extent to hold each placement's origin; the
   // reference repairs against the object's own vertices only (§1.8, §1.10).
+  // Kept on purpose: both clients' workshops assume a model's extent holds
+  // its parts (part turns are checked against it, and the grid stepper's
+  // minimum is neededExtent), and a model is loaded from fromPayload.
   'valid/parts-at-bound': 'extent grows to 64 to hold the placements; the reference says 8',
   // Not strict: the spec leaves these open, and the vector says so.
-  'latitude/ticks-null': 'ticks null is refused; the reference reads it as absent',
-  'latitude/facecolors-null': 'facecolors null is refused; the reference reads it as absent',
   'latitude/v2-triple-colors': 'v2 triples are read literally, as §5 permits; the reference rejects them',
   'latitude/unit-written-0.0': 'JSON.parse cannot tell 0.0 from 0, so it is accepted; the reference rejects it',
   'latitude/vertex-written-2.0': 'JSON.parse cannot tell 2.0 from 2, so it is accepted; the reference rejects it',
@@ -64,6 +56,8 @@ const DIVERGES: Record<string, string> = {
 function read(v: Vector): { status: 'object'; model: ShardModel } | { status: 'refused' } | { status: 'hidden' } | { status: 'n/a' } {
   const ev = v.event
   if (ev.kind === 11333 && ev.content === '') return { status: 'n/a' } // the default avatar is the client's, not this library's
+  // §3.1: an object without an address is refused before its content is read.
+  if (ev.kind === 33331 && objectD(ev) === null) return { status: 'refused' }
   if (ev.kind === 33331 && ev.tags.some((t) => t[0] === 'encrypted')) {
     return objectFromEvent(ev) === null ? { status: 'hidden' } : { status: 'refused' }
   }
