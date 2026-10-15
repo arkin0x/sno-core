@@ -68,7 +68,14 @@
  *
  * **What it does not cover.** Placed objects (`refs` and `parts`, §1.10) are
  * other events and are not read: the text is this object's own geometry.
- * Duplicate faces are kept, one token each, which the fingerprint sees as one.
+ * Duplicate faces are kept, one token each. minhash-equality-v1 reads tokens
+ * one at a time (shingle size 1) as a set, so it sees duplicates as one; a
+ * fingerprint that read runs of tokens would not.
+ *
+ * **Range.** Every coordinate, once moved, must be a safe integer (below
+ * 2^53 ticks). A publisher stays within 64 units of the origin (DECK-0003
+ * §1.8), far inside that; a larger value throws a RangeError rather than
+ * being spelled in a way the fingerprint would split.
  *
  * Pure.
  */
@@ -76,8 +83,17 @@ import { ticksOf, type ShardModel } from './shards.js'
 
 type Corner = [number, number, number]
 
-/** One whole tick count written as letters: each decimal digit 0..9 as `a`..`j`. */
+/**
+ * One whole tick count written as letters: each decimal digit 0..9 as `a`..`j`.
+ * Only a safe integer has exactly one decimal spelling: past 2^53 a number
+ * stands for more than one position, and from 1e21 `String` writes exponent
+ * notation, whose `e`, `+` and `.` would split one triangle into several
+ * tokens. So anything else is refused rather than spelled.
+ */
 function spell(n: number): string {
+  if (!Number.isSafeInteger(n) || n < 0) {
+    throw new RangeError(`canonicalGeometryText: ${n} ticks is not a safe whole number of ticks`)
+  }
   let out = ''
   for (const d of String(n)) out += String.fromCharCode(97 + Number(d))
   return out

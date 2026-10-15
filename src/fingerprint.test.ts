@@ -249,3 +249,21 @@ describe('canonicalGeometryText: objects with no faces', () => {
     expect(canonicalGeometryText(model([[0, 0, 0], [240, 0, 0], [0, 720, 14]], []))).not.toBe(text)
   })
 })
+
+describe('canonicalGeometryText: range', () => {
+  it('spells the 64-unit publisher bound, corner to corner, as single tokens', () => {
+    const wide = model([[-7680, -7680, -7680], [7680, -7680, -7680], [-7680, 7680, 7680]], [[0, 1, 2]])
+    const text = canonicalGeometryText(wide)
+    // Model Z is the wire's negated, so (0,0,15360) (0,15360,0) (15360,0,15360) once moved.
+    expect(text).toBe('axaxbfdgayaxbfdgaxaybfdgaxaxbfdgaz')
+    expect(fingerprintTokens(text)).toEqual([text])
+  })
+
+  it('refuses a coordinate that is not a safe integer instead of spelling it wrong', () => {
+    // 1e21 would print as "1e+21"; past 2^53 a number names more than one position.
+    const huge: ShardModel = { ...newShard('h'), mode: 'solid', vertices: [
+      { p: [0, 0, 0], c: RED }, { p: [1e21, 0, 0], c: RED }, { p: [0, 1, 0], c: RED },
+    ], faces: [[0, 1, 2]] }
+    expect(() => canonicalGeometryText(huge)).toThrow(RangeError)
+  })
+})
