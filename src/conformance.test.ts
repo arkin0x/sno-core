@@ -124,12 +124,12 @@ function differences(v: Vector): string[] {
   same('faces', m.faces, want.faces)
   same('fronts', fronts(points, m.faces), want.fronts)
 
-  // A palette colour is a byte on the wire and n / 255 in the model; a v1
+  // A palette color is a byte on the wire and n / 255 in the model; a v1
   // literal is the clamped number itself.
   const literal = want.color_form === 'literal'
-  const colour = (c: number[]): number[] => (literal ? c.map((n) => Math.round(n * 1e9) / 1e9) : c.map((n) => Math.round(n * 255)))
-  const expectColour = (c: number[]): number[] => (literal ? c.map((n) => Math.round(n * 1e9) / 1e9) : c)
-  same('colors', m.vertices.map((x) => colour(x.c)), (want.colors as number[][]).map(expectColour))
+  const color = (c: number[]): number[] => (literal ? c.map((n) => Math.round(n * 1e9) / 1e9) : c.map((n) => Math.round(n * 255)))
+  const expectColor = (c: number[]): number[] => (literal ? c.map((n) => Math.round(n * 1e9) / 1e9) : c)
+  same('colors', m.vertices.map((x) => color(x.c)), (want.colors as number[][]).map(expectColor))
   same('face_colors', m.facecolors ? m.facecolors.map((c) => c.map((n) => Math.round(n * 255))) : null, want.face_colors)
 
   same('refs', bareRefs(m.refs ?? []), bareRefs(want.refs as unknown[]))
