@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AUTH_DEADLINE_MS, CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
-  MAX_PRICE_SATS, SELLER_LABEL_MAX, feedItems, handlerFilter, isDeleted, isListing, listingApp, listingFromEvent, listingPointer, objectFromEvent, readCredit, readEach,
+  MAX_PRICE_SATS, SELLER_LABEL_MAX, feedItems, handlerFilter, isDeleted, isListing, listingApp, listingFromEvent, listingPointer, objectD, objectFromEvent, readCredit, readEach,
   registrableDomain, sellerLink,
   type DeletionFilter, type FeedEvent, type FeedFilter, type FeedState, type ReadFilter, type Subscribe,
 } from './feed.js'
@@ -80,6 +80,19 @@ describe('objectFromEvent', () => {
     expect(objectFromEvent({ ...obj('a', 1), content: '{nope' })).toBeNull()
     expect(objectFromEvent({ ...obj('a', 1), tags: [['d', 'a'], ['encrypted', 'aes-256-gcm', 'x', 'cyberspace:region']] })).toBeNull()
     expect(objectFromEvent({ ...obj('a', 1), content: JSON.stringify({ v: 2, name: 'e', unit: 0, extent: 8, mode: 'points', vertices: [], colors: [], faces: [] }) })).toBeNull()
+  })
+
+  it('refuses a missing or empty d, reading the first d tag as NIP-01 does (DECK-0003 §3.1)', () => {
+    expect(objectD({ tags: [] })).toBeNull()
+    expect(objectD({ tags: [['d']] })).toBeNull()
+    expect(objectD({ tags: [['d', '']] })).toBeNull()
+    expect(objectD({ tags: [['d', ''], ['d', 'late']] })).toBeNull()
+    expect(objectD({ tags: [['name', 'x'], ['d', 'chair'], ['d', '']] })).toBe('chair')
+    expect(objectFromEvent({ ...obj('a', 1), tags: [['d', '']] })).toBeNull()
+  })
+
+  it('refuses a payload with a blank name (DECK-0003 §1.1)', () => {
+    expect(objectFromEvent({ ...obj('a', 1), content: payload('  ') })).toBeNull()
   })
 })
 

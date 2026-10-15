@@ -159,11 +159,23 @@ export function objectAddress(pubkey: string, d: string): string {
   return `${SNO_KIND}:${pubkey}:${d}`
 }
 
+/**
+ * An object's `d`, or null when it has none a reader may accept (DECK-0003
+ * §3.1): no `d` tag, or an empty one. The first `d` tag is the one that
+ * counts, as NIP-01 reads it. A kind 33331 without one is refused, hidden or
+ * not, because a relay files every d-less object from one author under the
+ * one address `33331:<pubkey>:`, each replacing the last.
+ */
+export function objectD(ev: Pick<FeedEvent, 'tags'>): string | null {
+  const d = ev.tags.find((t) => t[0] === 'd')?.[1]
+  return typeof d === 'string' && d !== '' ? d : null
+}
+
 /** The object an event carries, or null when it is not one or is malformed. */
 export function objectFromEvent(ev: FeedEvent): FeedObject | null {
   if (ev.kind !== SNO_KIND) return null
-  const d = ev.tags.find((t) => t[0] === 'd')?.[1]
-  if (!d) return null
+  const d = objectD(ev)
+  if (d === null) return null
   // A sealed object's content is a preview, not a payload. Sealed to a place
   // (DECK-0003 §3.4), it is not the feed's to show; sealed for sale, it is a
   // listing (listingFromEvent), with no shape until it is bought.
@@ -353,8 +365,8 @@ export function listingFromEvent(ev: FeedEvent): FeedListing | null {
   if (scheme !== 'aes-256-gcm') return null
   if (typeof ciphertext !== 'string' || !BASE64.test(ciphertext)) return null
   if ((ciphertext.length / 4) * 3 - (ciphertext.endsWith('==') ? 2 : ciphertext.endsWith('=') ? 1 : 0) < MIN_CIPHERTEXT_BYTES) return null
-  const d = ev.tags.find((t) => t[0] === 'd')?.[1]
-  if (typeof d !== 'string' || !LISTING_D.test(d)) return null
+  const d = objectD(ev)
+  if (d === null || !LISTING_D.test(d)) return null
   // One price, ["price", "<positive whole sats>", "SATS"], the literal SATS: another unit read as sats would misstate the price.
   const prices = ev.tags.filter((t) => t[0] === 'price')
   if (prices.length !== 1) return null

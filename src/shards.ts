@@ -194,6 +194,32 @@ export interface ShardPayload {
 
 export const MODES: ShardMode[] = ['solid', 'points', 'lines']
 
+/**
+ * What a writer calls an object whose author has not named it, or has
+ * cleared the name. DECK-0003 §1.1 requires a name that is not blank, and
+ * advises a writer to supply a placeholder so that nobody publishes an
+ * object every reader refuses by leaving a text box empty.
+ */
+export const PLACEHOLDER_NAME = 'Untitled'
+
+/**
+ * Whether a name is blank under DECK-0003 §1.9 rule 1a: empty, or nothing but
+ * whitespace, which the deck defines as Unicode's White_Space characters.
+ * Spelled out rather than left to `trim()`, which also strips U+FEFF, a
+ * character the deck does not count and the reference keeps.
+ */
+export function blankName(name: string): boolean {
+  return /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/.test(name)
+}
+
+/**
+ * The optional payload fields that are refused when written as null
+ * (DECK-0003 §1.1): null is not absence. `extent` is not among them, because
+ * it is repaired rather than validated and null is one more malformed value
+ * that means 8; `type` is not among them because it is ignored whatever it is.
+ */
+const NULL_REFUSED = ['ticks', 'palette', 'facecolors', 'up', 'spin', 'refs', 'parts'] as const
+
 /** Default half-width of the build grid, in units; each shard keeps its own (`extent`). */
 export const GRID_HALF = 8
 export const MIN_EXTENT = 1
@@ -367,7 +393,9 @@ export function toPayload(s: ShardModel): ShardPayload {
   const palette = s.palette ?? BUILT_IN
   return {
     v: WIRE_VERSION,
-    name: s.name,
+    // §1.1: a blank name makes a payload every reader refuses, so the writer
+    // puts the placeholder back rather than publish one.
+    name: blankName(s.name) ? PLACEHOLDER_NAME : s.name,
     unit: s.unit,
     extent: s.extent,
     mode: s.mode,
@@ -440,7 +468,9 @@ export function packFaceColors(indices: number[]): number[] {
  */
 export function unpackFaceColors(packed: unknown, count: number, palette: Palette): number[] | null {
   if (packed === undefined) return null
-  if (!Array.isArray(packed) || packed.length === 0) return null
+  // An empty list is one colour for each of no faces: valid on an object with
+  // no faces, and too short for any other (§1.4a, as the reference reads it).
+  if (!Array.isArray(packed)) return null
   const out: number[] = []
   for (const e of packed) {
     if (!Number.isInteger(e)) return null
@@ -512,6 +542,11 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
   // because the field is noise and rejecting on noise would refuse every
   // object anyone else writes correctly.
   if (p.v !== 1 && p.v !== WIRE_VERSION) return null
+  // §1.9 rule 1a: a name is required and must not be blank. Its length is not
+  // checked; it is truncated below.
+  if (typeof p.name !== 'string' || blankName(p.name)) return null
+  // §1.1: an optional field written as null is refused, not read as absent.
+  if (NULL_REFUSED.some((k) => (p as Record<string, unknown>)[k] === null)) return null
   if (!Array.isArray(p.vertices) || !Array.isArray(p.colors) || !Array.isArray(p.faces)) return null
   if (p.vertices.length !== p.colors.length) return null
   if (!MODES.includes(p.mode as ShardMode)) return null
@@ -529,9 +564,10 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
   const vertices: ShardVertex[] = []
   for (let i = 0; i < p.vertices.length; i++) {
     const pt = p.vertices[i], c = p.colors[i]
-    if (!Array.isArray(pt) || pt.length !== 3) return null
-    const whole = pt.map(Number) as [number, number, number]
-    if (!whole.every(Number.isInteger)) return null
+    // Integers as JSON writes them (§1.9 rule 6): "1", true and null are not
+    // coordinates, so nothing is coerced through Number() on the way in.
+    if (!Array.isArray(pt) || pt.length !== 3 || !pt.every((n) => Number.isInteger(n))) return null
+    const whole: [number, number, number] = [pt[0], pt[1], pt[2]]
     const r = rest[i]
     // A literal triple stays exactly as written: every shard made before the
     // palette existed is one, and snapping them on read would change objects
@@ -566,8 +602,9 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
   }
   const faces: Array<[number, number, number]> = []
   for (const f of p.faces) {
+    // As for vertices: validFace refuses anything that is not an integer.
     if (!Array.isArray(f) || f.length !== 3) return null
-    const face = f.map(Number) as [number, number, number]
+    const face: [number, number, number] = [f[0], f[1], f[2]]
     if (!validFace(face, vertices.length)) return null
     faces.push(face)
   }
@@ -597,7 +634,7 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
   const extent = Number.isInteger(p.extent) && (p.extent as number) >= MIN_EXTENT && (p.extent as number) <= MAX_EXTENT ? (p.extent as number) : GRID_HALF
   return {
     id,
-    name: typeof p.name === 'string' ? p.name.slice(0, 64) : 'shard',
+    name: p.name.slice(0, 64),
     unit: p.unit as number,
     extent: Math.max(extent, neededExtent({ vertices, parts })),
     mode: p.mode as ShardMode,
