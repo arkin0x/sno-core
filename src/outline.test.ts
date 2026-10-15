@@ -49,9 +49,19 @@ describe('grid divisions', () => {
     }
   })
 
-  it('offers 6, 8 and 10 and not the ones that would land between ticks', () => {
-    expect([...DIVISIONS]).toEqual([1, 2, 3, 4, 5, 6, 8, 10])
-    expect(DIVISIONS).not.toContain(7 as never)
-    expect(DIVISIONS).not.toContain(9 as never)
+  it('offers the exact steps up to a single tick, and not the ones that would land between ticks', () => {
+    expect([...DIVISIONS]).toEqual([1, 2, 3, 4, 5, 6, 8, 10, 12, 20, 24, 30, 40, 60, 120])
+    for (const bad of [7, 9, 11, 50, 100]) expect(DIVISIONS).not.toContain(bad as never)
+  })
+
+  it('snapping a position to any division lands on whole ticks', () => {
+    for (const d of DIVISIONS) {
+      const step = TICKS_PER_UNIT / d
+      for (const v of [-3.71, -0.004, 0, 0.0083, 0.5, 1.2345, 7.999]) {
+        const t = Math.round((v * TICKS_PER_UNIT) / step) * step
+        expect(Number.isInteger(t)).toBe(true)
+        expect(Math.abs(t - v * TICKS_PER_UNIT)).toBeLessThanOrEqual(step / 2 + 1e-9)
+      }
+    }
   })
 })

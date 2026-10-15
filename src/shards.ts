@@ -55,10 +55,11 @@ export const TICKS_PER_UNIT = 120
  * A vertex is stored in 120ths of a unit (TICKS_PER_UNIT), so a division is
  * only offered when it divides 120 without a remainder: sevenths and ninths
  * would land vertices between ticks and could not be written to the wire.
- * That leaves 6, 8 and 10 as the next steps after 5; 12, 15, 20, 24, 30, 40
- * and 60 are exact too if finer work ever wants them.
+ * Past 10 the finer steps are 12, 20, 24, 30, 40, 60 and 120, the last being
+ * a single tick (arkinox, 2026-10-15). Fiftieths are deliberately absent:
+ * 120 / 50 is not whole. 15 is exact too but adds little between 12 and 20.
  */
-export const DIVISIONS = [1, 2, 3, 4, 5, 6, 8, 10] as const
+export const DIVISIONS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 20, 24, 30, 40, 60, 120] as const
 export type Division = typeof DIVISIONS[number]
 
 export interface ShardModel {
