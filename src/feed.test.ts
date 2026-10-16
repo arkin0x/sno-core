@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  AUTH_DEADLINE_MS, CONNECT_DEADLINE_MS, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
+  AUTH_DEADLINE_MS, CONNECT_DEADLINE_MS, DELETION_ADDRESS_MAX, DELETION_FILTER_BYTES, DELETION_FILTER_VALUES, FEED_PAGE, READ_DEADLINE_MS, SNO_KIND, createFeed, deletionFilters, creditAuthor, creditOf, creditTags, feedFilter, withCredit,
   MAX_PRICE_SATS, SELLER_LABEL_MAX, feedItems, handlerFilter, isDeleted, isListing, listingApp, listingFromEvent, listingPointer, objectD, objectFromEvent, readCredit, readEach,
   registrableDomain, sellerLink,
   type DeletionFilter, type FeedEvent, type FeedFilter, type FeedState, type ReadFilter, type Subscribe,
@@ -302,15 +302,69 @@ describe('createFeed', () => {
     expect(feed.state().exhausted).toBe(true)
   })
 
-  it('stops asking a relay that answered with less than a page', async () => {
+  it('a short page is asked again from its oldest second, then past it, and then the relay ends', async () => {
     const { subscribe, asked } = relays({ r: { events: [obj('a', 5)] } })
+    const feed = createFeed({ relays: ['r'], subscribe, pageSize: 3, onChange: () => {} })
+    for (let i = 0; i < 6 && !feed.state().exhausted; i++) {
+      const p = feed.more()
+      await vi.advanceTimersByTimeAsync(10)
+      await p
+    }
+    expect(asked.r.map((f) => f.until)).toEqual([undefined, 5, 4])
+    expect(feed.state().exhausted).toBe(true)
+    await feed.more()
+    expect(asked.r).toHaveLength(3)
+  })
+
+  it('an empty first page ends the relay at once', async () => {
+    const { subscribe, asked } = relays({ r: { events: [] } })
     const feed = createFeed({ relays: ['r'], subscribe, pageSize: 3, onChange: () => {} })
     const p = feed.more()
     await vi.advanceTimersByTimeAsync(10)
     await p
     expect(feed.state().exhausted).toBe(true)
-    await feed.more()
     expect(asked.r).toHaveLength(1)
+  })
+
+  it('keeps paging past a page the client pool cut short by dropping events that failed verification', async () => {
+    // Six objects at 100..95; the two at 99 and 98 carry bad signatures, and
+    // the pool drops them before the feed sees them, as nostr-tools does.
+    const events = Array.from({ length: 6 }, (_, i) => obj(`v${i}`, 100 - i))
+    const forged = new Set([events[1].id, events[2].id])
+    const asked: FeedFilter[] = []
+    const subscribe: Subscribe = (_url, f, h) => {
+      if (!f.kinds.includes(5)) asked.push(f as FeedFilter)
+      setTimeout(() => { for (const e of answer(events, f)) if (!forged.has(e.id)) h.onevent(e); h.oneose() }, 0)
+      return { close: () => {} }
+    }
+    const feed = createFeed({ relays: ['r'], subscribe, pageSize: 3, onChange: () => {} })
+    for (let i = 0; i < 6 && !feed.state().exhausted; i++) {
+      const p = feed.more()
+      await vi.advanceTimersByTimeAsync(10)
+      await p
+    }
+    // The relay's first page (100, 99, 98) reached the feed as one event; the
+    // feed still read on to 97, 96 and 95.
+    expect(feed.state().objects.map((o) => o.d)).toEqual(['v0', 'v3', 'v4', 'v5'])
+    expect(feed.state().exhausted).toBe(true)
+    expect(asked.map((f) => f.until)).toEqual([undefined, 100, 99, 97, 95, 94])
+  })
+
+  it('a short page keeps the rest of its oldest second, for a relay that caps limit below the page', async () => {
+    // The relay sends at most two whatever it is asked; 98a and 98b share a second.
+    const events = [obj('x100', 100), obj('x98a', 98), obj('x98b', 98), obj('x97', 97)]
+    const subscribe: Subscribe = (_url, f, h) => {
+      setTimeout(() => { for (const e of answer(events, { ...f, limit: Math.min(f.limit, 2) })) h.onevent(e); h.oneose() }, 0)
+      return { close: () => {} }
+    }
+    const feed = createFeed({ relays: ['r'], subscribe, pageSize: 3, onChange: () => {} })
+    for (let i = 0; i < 8 && !feed.state().exhausted; i++) {
+      const p = feed.more()
+      await vi.advanceTimersByTimeAsync(10)
+      await p
+    }
+    expect(feed.state().objects.map((o) => o.d).sort()).toEqual(['x100', 'x97', 'x98a', 'x98b'])
+    expect(feed.state().exhausted).toBe(true)
   })
 })
 
@@ -339,6 +393,72 @@ describe('deletions (NIP-09)', () => {
     await p
     expect(feed.state().objects.map((o) => o.d)).toEqual(['kept'])
     for (const f of seen) expect(Object.keys(f).filter((k) => k.startsWith('#')).length).toBeLessThanOrEqual(1)
+  })
+
+  const item = (d: string, pubkey = PK, id = `${(n += 1)}`.padStart(64, '0')): { pubkey: string; address: string; id: string } => ({ pubkey, address: `33331:${pubkey}:${d}`, id })
+  /** The tag values and authors of a filter as they go out, in JSON. */
+  const bytes = (f: DeletionFilter): number => new TextEncoder().encode(JSON.stringify([...(f['#a'] ?? f['#e'] ?? []), ...f.authors])).length
+
+  it('deletionFilters: chunks of at most DELETION_FILTER_VALUES values, each naming only its own authors', () => {
+    const items = Array.from({ length: 250 }, (_, i) => item(`o${i}`, i < 120 ? PK : PK2))
+    const filters = deletionFilters(items)
+    const byA = filters.filter((f) => f['#a'])
+    const byE = filters.filter((f) => f['#e'])
+    expect(byA.map((f) => f['#a']!.length)).toEqual([100, 100, 50])
+    expect(byE.map((f) => f['#e']!.length)).toEqual([100, 100, 50])
+    // Every address and id once, in some chunk.
+    expect(byA.flatMap((f) => f['#a']!)).toEqual(items.map((o) => o.address))
+    expect(byE.flatMap((f) => f['#e']!)).toEqual(items.map((o) => o.id))
+    expect(byA.map((f) => f.authors)).toEqual([[PK], [PK, PK2], [PK2]])
+    for (const f of filters) expect(Object.keys(f).filter((k) => k.startsWith('#'))).toHaveLength(1)
+    expect(deletionFilters([])).toEqual([])
+  })
+
+  it('deletionFilters: long addresses split by bytes; an address past DELETION_ADDRESS_MAX is checked by id only', () => {
+    const long = Array.from({ length: 40 }, (_, i) => item(`${i}`.padEnd(DELETION_ADDRESS_MAX - 80, 'x')))
+    const huge = item('h'.repeat(DELETION_ADDRESS_MAX * 64))
+    const filters = deletionFilters([...long, huge])
+    const byA = filters.filter((f) => f['#a'])
+    expect(byA.length).toBeGreaterThan(1)
+    for (const f of filters) expect(bytes(f)).toBeLessThanOrEqual(DELETION_FILTER_BYTES)
+    expect(byA.flatMap((f) => f['#a']!)).toEqual(long.map((o) => o.address))
+    // Never named by address, but its id is still read.
+    expect(filters.some((f) => f['#e']?.includes(huge.id))).toBe(true)
+    expect(DELETION_FILTER_VALUES).toBe(100)
+  })
+
+  it('deletionFilters: the byte bound holds for addresses that JSON escapes, and malformed ids or pubkeys are left out', () => {
+    // A control character takes six bytes in JSON; a quote, two.
+    const escaped = Array.from({ length: 100 }, (_, i) => item(`${i}`.padEnd(100, '\u0001').padEnd(160, '"')))
+    const badId = item('bad-id', PK, 'z'.repeat(20000))
+    const badKey = item('bad-key', 'Q'.repeat(64))
+    const filters = deletionFilters([...escaped, badId, badKey])
+    for (const f of filters) expect(bytes(f)).toBeLessThanOrEqual(DELETION_FILTER_BYTES)
+    const named = filters.flatMap((f) => [...(f['#a'] ?? []), ...(f['#e'] ?? [])])
+    expect(named).toHaveLength(escaped.length * 2)
+    expect(named.some((v) => v.includes('bad-'))).toBe(false)
+    expect(named.includes(badId.id)).toBe(false)
+  })
+
+  it('the feed reads every chunk, and hides an object deleted by an address in a later chunk', async () => {
+    const page = 150
+    const objs = Array.from({ length: page }, (_, i) => obj(`c${i}`, 1000 - i))
+    const last = objs[page - 1]
+    const events = [...objs, del(PK, 2000, [['a', `33331:${PK}:${last.tags[0][1]}`]])]
+    const deletionReads: DeletionFilter[] = []
+    const subscribe: Subscribe = (_url, f, h) => {
+      if (f.kinds.includes(5)) deletionReads.push(f as DeletionFilter)
+      setTimeout(() => { for (const e of answer(events, f)) h.onevent(e); h.oneose() }, 0)
+      return { close: () => {} }
+    }
+    const feed = createFeed({ relays: ['r'], subscribe, pageSize: page, onChange: () => {} })
+    const p = feed.more()
+    await vi.advanceTimersByTimeAsync(50)
+    await p
+    expect(deletionReads.map((f) => (f['#a'] ?? f['#e'])!.length)).toEqual([100, 50, 100, 50])
+    expect(deletionReads).toHaveLength(4)
+    expect(feed.state().objects).toHaveLength(page - 1)
+    expect(feed.state().objects.some((o) => o.d === last.tags[0][1])).toBe(false)
   })
 })
 

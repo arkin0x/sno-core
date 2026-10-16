@@ -124,16 +124,72 @@ export interface DeletionFilter {
 /** What a feed read asks: a page of objects, or the deletions of some. */
 export type ReadFilter = FeedFilter | DeletionFilter
 
-/** The two deletion reads for these objects: by address, and by event id. */
+/**
+ * How many values one deletion filter names, and how many bytes they take in
+ * the REQ as sent (JSON, quotes, escapes and commas included, authors too).
+ * strfry refuses a filter with more than 200 values in a tag by default, and
+ * a REQ larger than the relay's message limit closes the socket; a page of
+ * objects stays well inside both, however long their `d` tags are.
+ */
+export const DELETION_FILTER_VALUES = 100
+export const DELETION_FILTER_BYTES = 16 * 1024
+/**
+ * An address longer than this (as sent, in JSON) is never named in a deletion read. An object's
+ * `d` has no length bound in the format (a listing's does, 128 bytes), so an
+ * address can be any size; one that long is still checked by its event id
+ * (the `#e` read), which catches a deletion that names the event, but not one
+ * that names only the address.
+ */
+export const DELETION_ADDRESS_MAX = 1024
+/** How many deletion reads a page runs at once. */
+export const DELETION_READS_AT_ONCE = 6
+
+/**
+ * The deletion reads for these objects: by address, and by event id, each in
+ * chunks of at most DELETION_FILTER_VALUES values and DELETION_FILTER_BYTES
+ * bytes, so no single REQ is large enough for a relay to refuse. Each chunk
+ * names only the authors of its own objects.
+ */
 export function deletionFilters(objects: readonly Pick<FeedObject, 'pubkey' | 'address' | 'id'>[]): DeletionFilter[] {
-  if (objects.length === 0) return []
-  const authors = [...new Set(objects.map((o) => o.pubkey))]
-  const limit = Math.max(50, objects.length * 2)
-  return [
-    { kinds: [5], authors, '#a': [...new Set(objects.map((o) => o.address))], limit },
-    { kinds: [5], authors, '#e': [...new Set(objects.map((o) => o.id))], limit },
-  ]
+  const filters: DeletionFilter[] = []
+  // A pool that verifies events never passes a malformed id or pubkey, but a
+  // feed's subscribe need not verify: one that is not 64 hex is left out.
+  const sound = objects.filter((o) => HEX64.test(o.id) && HEX64.test(o.pubkey))
+  const chunked = (tag: '#a' | '#e', pairs: [value: string, pubkey: string][]): void => {
+    const seen = new Set<string>()
+    let values: string[] = []
+    let authors = new Set<string>()
+    let bytes = 0
+    const flush = (): void => {
+      if (values.length === 0) return
+      filters.push({ kinds: [5], authors: [...authors], [tag]: values, limit: Math.max(50, values.length * 2) })
+      values = []
+      authors = new Set()
+      bytes = 0
+    }
+    for (const [value, pubkey] of pairs) {
+      if (seen.has(value)) continue
+      seen.add(value)
+      // Each value's own bytes, plus its author's when the chunk does not yet name them.
+      let cost = jsonBytes(value) + (authors.has(pubkey) ? 0 : jsonBytes(pubkey))
+      if (values.length >= DELETION_FILTER_VALUES || (values.length > 0 && bytes + cost > DELETION_FILTER_BYTES)) {
+        flush()
+        cost = jsonBytes(value) + jsonBytes(pubkey)
+      }
+      values.push(value)
+      authors.add(pubkey)
+      bytes += cost
+    }
+    flush()
+  }
+  chunked('#a', sound.filter((o) => jsonBytes(o.address) <= DELETION_ADDRESS_MAX).map((o) => [o.address, o.pubkey]))
+  chunked('#e', sound.map((o) => [o.id, o.pubkey]))
+  return filters
 }
+
+const HEX64 = /^[0-9a-f]{64}$/
+/** A value's bytes in a REQ: its JSON (quotes and escapes), and the comma after it. */
+const jsonBytes = (s: string): number => new TextEncoder().encode(JSON.stringify(s)).length + 1
 
 /**
  * Whether an author deleted an object (NIP-09): a kind 5 by the object's own
@@ -771,9 +827,13 @@ export interface Feed {
  * for `pageSize` objects from that relay's own oldest second so far, that
  * second included, so events sharing it past the page's end are not lost; a
  * page that brings nothing new steps one second past it, and a second such
- * page means the relay ignores `until`, so it is not asked again. A relay
- * that answers with fewer than it was asked for and says it is finished has
- * nothing older. One that cannot be read at all, or runs out its time
+ * page means the relay has nothing older (or ignores `until`), so it is not
+ * asked again. A short page alone does not end a relay: the client may have
+ * dropped events that failed verification, or the relay may cap `limit`
+ * below the page (a page whose every new event failed verification still
+ * looks like the end). A relay that finishes a page with no events at all
+ * has nothing older. More events in one second than a relay sends in one
+ * answer can still be missed, which `until` alone cannot avoid. One that cannot be read at all, or runs out its time
  * without a single event, is asked again next page, and left out after a
  * second miss in a row. Following each relay on its own cursor is what keeps a busy
  * relay from pushing a quiet one's objects past the next page's `until`.
@@ -800,6 +860,7 @@ export function createFeed(opts: FeedOptions): Feed {
   const misses = new Map<string, number>()
   /** Authors' deletions (NIP-09) of objects read so far, and the events already checked for them. */
   const deletions: FeedEvent[] = []
+  const deletionIds = new Set<string>()
   const checked = new Set<string>()
   const open = new Set(opts.relays)
   let loading = false
@@ -851,7 +912,9 @@ export function createFeed(opts: FeedOptions): Feed {
         if (ev.kind !== SNO_KIND) return
         counts.set(url, (counts.get(url) ?? 0) + 1)
         const mine = sentBy.get(url) ?? new Set<string>()
-        if (!mine.has(ev.id)) { mine.add(ev.id); fresh.set(url, (fresh.get(url) ?? 0) + 1) }
+        // New, and inside what was asked: a relay that ignores `until` and
+        // keeps sending newer objects must not count them as progress.
+        if (!mine.has(ev.id)) { mine.add(ev.id); if (until === undefined || ev.created_at <= until) fresh.set(url, (fresh.get(url) ?? 0) + 1) }
         sentBy.set(url, mine)
         const seen = seenOn.get(ev.id) ?? new Set<string>()
         seen.add(url)
@@ -890,8 +953,14 @@ export function createFeed(opts: FeedOptions): Feed {
           continue
         }
         misses.delete(url)
-        // Finished with less than a page: nothing older to ask for.
-        if (how === 'eose' && got < size) { open.delete(url); continue }
+        // Finished with nothing at all: nothing older to ask for.
+        if (how === 'eose' && got === 0) { open.delete(url); continue }
+        // A short page is not the end on its own: `got` counts only what
+        // reached the feed, and a client's pool drops an event whose
+        // signature fails before the feed sees it, so a full page can arrive
+        // short; so can the page of a relay that caps `limit` below what it
+        // was asked. Short or full, a relay ends after a page with nothing
+        // new from its oldest second and then one with nothing new past it.
         if ((fresh.get(url) ?? 0) === 0) {
           // Events, but every one a repeat: either more than a page share the
           // boundary second, so step past it, or the relay ignores `until`
@@ -914,12 +983,19 @@ export function createFeed(opts: FeedOptions): Feed {
       if (item) unchecked.push(item)
     }
     if (answered.length > 0 && unchecked.length > 0 && !closed) {
-      const reads = deletionFilters(unchecked).map((f) => {
-        const handle = readEach<ReadFilter>(answered, f, opts.subscribe, (ev) => { if (ev.kind === 5) deletions.push(ev) }, opts.read)
-        reading.add(handle)
-        return handle.done.finally(() => { reading.delete(handle) })
-      })
-      await Promise.all(reads)
+      // A few reads at a time, so a page of long addresses never opens a
+      // burst of REQs on one socket (strfry allows 20 subscriptions).
+      const filters = deletionFilters(unchecked)
+      for (let i = 0; i < filters.length && !closed; i += DELETION_READS_AT_ONCE) {
+        await Promise.all(filters.slice(i, i + DELETION_READS_AT_ONCE).map((f) => {
+          const handle = readEach<ReadFilter>(answered, f, opts.subscribe, (ev) => {
+            // One deletion can name objects in several chunks, and come from several relays.
+            if (ev.kind === 5 && !deletionIds.has(ev.id)) { deletionIds.add(ev.id); deletions.push(ev) }
+          }, opts.read)
+          reading.add(handle)
+          return handle.done.finally(() => { reading.delete(handle) })
+        }))
+      }
     }
     loading = false
     clearTimeout(batch)
