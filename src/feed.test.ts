@@ -456,7 +456,6 @@ describe('deletions (NIP-09)', () => {
     await vi.advanceTimersByTimeAsync(50)
     await p
     expect(deletionReads.map((f) => (f['#a'] ?? f['#e'])!.length)).toEqual([100, 50, 100, 50])
-    // One deletion, though every chunk's read could return it: held once.
     expect(deletionReads).toHaveLength(4)
     expect(feed.state().objects).toHaveLength(page - 1)
     expect(feed.state().objects.some((o) => o.d === last.tags[0][1])).toBe(false)

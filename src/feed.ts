@@ -832,7 +832,8 @@ export interface Feed {
  * dropped events that failed verification, or the relay may cap `limit`
  * below the page (a page whose every new event failed verification still
  * looks like the end). A relay that finishes a page with no events at all
- * has nothing older. One that cannot be read at all, or runs out its time
+ * has nothing older. More events in one second than a relay sends in one
+ * answer can still be missed, which `until` alone cannot avoid. One that cannot be read at all, or runs out its time
  * without a single event, is asked again next page, and left out after a
  * second miss in a row. Following each relay on its own cursor is what keeps a busy
  * relay from pushing a quiet one's objects past the next page's `until`.
@@ -911,7 +912,9 @@ export function createFeed(opts: FeedOptions): Feed {
         if (ev.kind !== SNO_KIND) return
         counts.set(url, (counts.get(url) ?? 0) + 1)
         const mine = sentBy.get(url) ?? new Set<string>()
-        if (!mine.has(ev.id)) { mine.add(ev.id); fresh.set(url, (fresh.get(url) ?? 0) + 1) }
+        // New, and inside what was asked: a relay that ignores `until` and
+        // keeps sending newer objects must not count them as progress.
+        if (!mine.has(ev.id)) { mine.add(ev.id); if (until === undefined || ev.created_at <= until) fresh.set(url, (fresh.get(url) ?? 0) + 1) }
         sentBy.set(url, mine)
         const seen = seenOn.get(ev.id) ?? new Set<string>()
         seen.add(url)
