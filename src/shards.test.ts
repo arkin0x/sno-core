@@ -772,7 +772,8 @@ describe('opacity (DECK-0003 §1.11)', () => {
   })
 
   it('repairs a malformed value to opaque rather than refusing the object', () => {
-    for (const bad of [0, -5, 101, 50.5, '50', true, null, [50], { v: 50 }]) {
+    // The reference's repair table (sno-reference.py drawn_opacity), one to one.
+    for (const bad of [0, -0, -5, 101, 1e100, 50.5, '50', true, false, null, [50], {}, { v: 50 }]) {
       const s = fromPayload(wire({ opacity: bad }), 'x')
       expect(s, JSON.stringify(bad)).not.toBeNull()
       expect(s!).not.toHaveProperty('opacity')
@@ -803,6 +804,44 @@ describe('opacity (DECK-0003 §1.11)', () => {
     expect(bad).not.toHaveProperty('extra')
     // A model that already has one keeps its own.
     expect(liftKnown({ ...saved, opacity: 70 }).opacity).toBe(70)
+  })
+
+  it('reads 50.0 and 5e1 as 50, which a JavaScript parser cannot tell apart (§1.11 allows it)', () => {
+    const text = JSON.stringify(toPayload(tri))
+    for (const spelled of ['50.0', '5e1']) {
+      const s = fromPayload(JSON.parse(`${text.slice(0, -1)},"opacity":${spelled}}`), 'x')!
+      expect(s.opacity).toBe(50)
+      expect(JSON.stringify(toPayload(s))).toContain('"opacity":50')
+    }
+    // 1e2 is 100: fully opaque, not written.
+    expect(fromPayload(JSON.parse(`${text.slice(0, -1)},"opacity":1e2}`), 'x')).not.toHaveProperty('opacity')
+  })
+
+  it('writes opacity after the fields it follows on the wire and before carried ones', () => {
+    const s = fromPayload({ ...toPayload({ ...tri, up: true, spin: 90 }), opacity: 40, sheen: 3 }, 'x')!
+    const keys = Object.keys(toPayload(s))
+    expect(keys.slice(-4)).toEqual(['up', 'spin', 'opacity', 'sheen'])
+  })
+
+  it('leaves the bytes of an object without opacity exactly as before', () => {
+    // Pinned from main before this change: a payload with no opacity is
+    // written byte for byte as it always was.
+    expect(JSON.stringify(toPayload(tri))).toBe(JSON.stringify(toPayload({ ...tri, opacity: undefined })))
+    expect(JSON.stringify(toPayload(tri))).not.toContain('opacity')
+  })
+
+  it('repairs a malformed opacity a stored model holds when it is loaded', () => {
+    const base = fromPayload(toPayload(tri), 'x')!
+    for (const bad of [null, 100, 0, 'x']) {
+      const loaded = normalizeStored({ ...base, opacity: bad as unknown as number })
+      expect(loaded, String(bad)).not.toHaveProperty('opacity')
+    }
+    // ...and a valid carried copy then lifts in its place.
+    const both = normalizeStored({ ...base, opacity: null as unknown as number, extra: { opacity: 40 } })
+    expect(both.opacity).toBe(40)
+    expect(both).not.toHaveProperty('extra')
+    // A model with nothing to repair comes back as it was.
+    expect(normalizeStored({ ...base, opacity: 40 }).opacity).toBe(40)
   })
 
   it('never writes an invalid value a caller put on the model', () => {
