@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { PLACEHOLDER_NAME, TICKS_PER_UNIT, blankName, expandFaceColors, flatten, fromPayload, newShard, normalizeStored, packFaceColors, packTicks, ticksOf, toPayload, toRender, unitsLabel, unpackFaceColors, unpackTicks, validFace, validPoint, vertexAt, type ShardModel } from './shards.js'
+import { PLACEHOLDER_NAME, TICKS_PER_UNIT, blankName, expandFaceColors, flatten, fromPayload, liftKnown, newShard, normalizeStored, packFaceColors, packTicks, ticksOf, toPayload, toRender, unitsLabel, unpackFaceColors, unpackTicks, validFace, validPoint, vertexAt, type ShardModel } from './shards.js'
 import { BUILT_IN, indexOf, readPalette, remap, resolvePalette } from './snoPalette.js'
 
 const tri: ShardModel = {
@@ -606,5 +606,137 @@ describe('a version 2 payload whose colours predate the palette', () => {
     const s = fromPayload({ ...TRIFORCE, colors: Array.from({ length: 12 }, () => 40) }, 'id')
     expect(s).not.toBeNull()
     expect(s!.vertices).toHaveLength(12)
+  })
+})
+
+describe('fields this version does not know survive a round trip (DECK-0003 §5)', () => {
+  // A field from a later version of the format. An older editor must carry
+  // it through an edit, or the first person to open and republish the object
+  // with that editor would strip it for everyone after them.
+  const later = { opacity: 50, glow: { strength: 3, tint: [1, 2, 3] }, notes: ['a', 'b'], flag: false, zero: 0, nothing: null }
+
+  it('reads them into `extra`, and writes them back unchanged', () => {
+    const wire = JSON.parse(JSON.stringify({ ...toPayload(tri), ...later }))
+    const s = fromPayload(wire, 'x')
+    expect(s).not.toBeNull()
+    expect(s!.extra).toEqual(later)
+    const again = JSON.parse(JSON.stringify(toPayload(s!)))
+    for (const [k, v] of Object.entries(later)) expect(again[k]).toEqual(v)
+    // And once more: carrying is stable, not a one-off.
+    expect(fromPayload(again, 'y')!.extra).toEqual(later)
+  })
+
+  it('carries them through an edit made with the ordinary spread', () => {
+    const s = fromPayload({ ...toPayload(tri), ...later }, 'x')!
+    const moved: ShardModel = { ...s, vertices: s.vertices.map((v, i) => (i === 0 ? { ...v, p: [1, 1, 1] } : v)) }
+    expect(toPayload(moved)).toMatchObject(later)
+  })
+
+  it('adds nothing when there is nothing unknown', () => {
+    const s = fromPayload(toPayload(tri), 'x')!
+    expect(s).not.toHaveProperty('extra')
+    expect(Object.keys(toPayload(s)).sort()).toEqual(Object.keys(toPayload(tri)).sort())
+  })
+
+  it('drops the legacy `type` rather than carrying it (§1.1a)', () => {
+    const s = fromPayload({ ...toPayload(tri), type: 'shard', opacity: 50 }, 'x')!
+    expect(s.extra).toEqual({ opacity: 50 })
+    expect(toPayload(s)).not.toHaveProperty('type')
+  })
+
+  it('never lets a carried copy replace a field this library computes', () => {
+    const s = fromPayload(toPayload(tri), 'x')!
+    const tampered: ShardModel = { ...s, extra: { name: 'evil', mode: 'points', unit: 99, opacity: 50 } }
+    const out = toPayload(tampered)
+    expect(out.name).toBe('tri')
+    expect(out.mode).toBe('solid')
+    expect(out.unit).toBe(3)
+    expect((out as unknown as Record<string, unknown>).opacity).toBe(50)
+  })
+
+  it('copies what it carries: the model never shares structure with the event', () => {
+    const wire = { ...toPayload(tri), glow: { strength: 3 } }
+    const s = fromPayload(wire, 'x')!
+    wire.glow.strength = 9
+    expect(s.extra).toEqual({ glow: { strength: 3 } })
+  })
+
+  it('carries a key named __proto__ as data and never touches a prototype', () => {
+    const wire = JSON.parse(`{${JSON.stringify(toPayload(tri)).slice(1, -1)},"__proto__":{"polluted":true}}`)
+    const s = fromPayload(wire, 'x')!
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+    expect(Object.getPrototypeOf(s.extra)).toBe(Object.prototype)
+    expect(Object.prototype.hasOwnProperty.call(s.extra, '__proto__')).toBe(true)
+    const out = JSON.parse(JSON.stringify(toPayload(s)))
+    expect(Object.prototype.hasOwnProperty.call(out, '__proto__')).toBe(true)
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  it('keeps payload keys named like model-only fields in `extra`, never on the model', () => {
+    const s = fromPayload({ ...toPayload(tri), id: 'evil', updatedAt: 1, paletteName: 'x', extra: { a: 1 } }, 'real')!
+    expect(s.id).toBe('real')
+    expect(s.updatedAt).not.toBe(1)
+    expect(s.paletteName).toBeUndefined()
+    expect(s.extra).toEqual({ id: 'evil', updatedAt: 1, paletteName: 'x', extra: { a: 1 } })
+  })
+
+  it('carries them from a version 1 payload too', () => {
+    const v1 = { ...toPayload(tri), v: 1, colors: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], sheen: 3 }
+    const s = fromPayload(v1, 'x')!
+    expect(s.extra).toEqual({ sheen: 3 })
+    expect(toPayload(s)).toMatchObject({ v: 2, sheen: 3 })
+  })
+
+  it('keeps them through the library\'s own edits and loading', async () => {
+    const { addPart, removeParts } = await import('./parts.js')
+    const { stamp, FLOOR } = await import('./stamps.js')
+    const s = fromPayload({ ...toPayload(tri), sheen: 3 }, 'x')!
+    const ref: ['a', string] = ['a', `33331:${'a'.repeat(64)}:d`]
+    const placed = addPart(s, ref, { at: [0, 0, 0], turn: [0, 0, 0], step: 0 }).shard
+    expect(placed.extra).toEqual({ sheen: 3 })
+    expect(removeParts(placed, [0]).extra).toEqual({ sheen: 3 })
+    expect(expandFaceColors(s).extra).toEqual({ sheen: 3 })
+    expect(normalizeStored(JSON.parse(JSON.stringify(s))).extra).toEqual({ sheen: 3 })
+    const stamped = stamp(s, 'block', 1, 0, [0, 0, 0], [1, 0, 0], FLOOR)
+    expect(stamped).not.toBeNull()
+    expect(stamped!.shard.extra).toEqual({ sheen: 3 })
+  })
+
+  it('writes a payload that shares nothing with what it carries', () => {
+    const s = fromPayload({ ...toPayload(tri), glow: { strength: 3 } }, 'x')!
+    const out = toPayload(s) as unknown as Record<string, { strength: number }>
+    out.glow.strength = 9
+    // Shared is fine for the writer (the payload shares faces with the model
+    // too); what matters is that the carried value is written as it was read.
+    expect(JSON.parse(JSON.stringify(toPayload(fromPayload({ ...toPayload(tri), glow: { strength: 3 } }, 'y')!))).glow).toEqual({ strength: 3 })
+  })
+
+  it('carries a nested __proto__ as data', () => {
+    const wire = JSON.parse(`{${JSON.stringify(toPayload(tri)).slice(1, -1)},"deep":{"__proto__":{"polluted":true}}}`)
+    const s = fromPayload(wire, 'x')!
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+    expect(JSON.parse(JSON.stringify(toPayload(s))).deep).toEqual(JSON.parse('{"__proto__":{"polluted":true}}'))
+  })
+
+  it('leaves behind a value that is not data rather than throwing', () => {
+    const s = fromPayload({ ...toPayload(tri), fn: () => 1, sheen: 3 }, 'x')
+    expect(s).not.toBeNull()
+    expect(s!.extra).toEqual({ sheen: 3 })
+  })
+
+  it('takes a field this version knows out of `extra` when a stored model is loaded', () => {
+    // A model saved by a version that carried `mode` as unknown, say: the known
+    // value is the one this library computes, so the carried copy goes.
+    const stored: ShardModel = { ...fromPayload(toPayload(tri), 'x')!, extra: { mode: 'points', sheen: 3 } }
+    const loaded = normalizeStored(stored)
+    expect(loaded.mode).toBe('solid')
+    expect(loaded.extra).toEqual({ sheen: 3 })
+    expect(liftKnown({ ...stored, extra: { mode: 'points' } })).not.toHaveProperty('extra')
+    const plain = fromPayload(toPayload(tri), 'x')!
+    expect(liftKnown(plain)).toBe(plain)
+  })
+
+  it('still refuses a payload whose known fields are malformed, whatever else it carries', () => {
+    expect(fromPayload({ ...toPayload(tri), mode: 'voxels', opacity: 50 }, 'x')).toBeNull()
   })
 })

@@ -114,6 +114,31 @@ export interface ShardModel {
    * vertices: the wire's with Z negated. See `Part`.
    */
   parts?: Part[]
+  /**
+   * The payload's fields this library does not know, kept exactly as they came
+   * so that reading an object and writing it back does not strip them. DECK-0003
+   * §5 has a reader ignore what it does not recognise; carrying it through an
+   * edit is this library's choice on top of that, so that an older editor does
+   * not undo a newer one. Absent when there were none.
+   *
+   * A field added to the format after this version (say a new optional
+   * setting) would otherwise vanish the first time anyone with an older client
+   * opened the object, nudged one vertex and published: silently, and for
+   * everyone who reads the object after them. Carried here, it travels
+   * through every edit untouched, and the newer reader still finds it.
+   *
+   * Never read, only carried. Not validated, because this library cannot know
+   * what a field it does not know should look like; a newer reader validates
+   * it as its own version of the format says. Carried unchanged even when the
+   * geometry is edited, which is right for a setting that does not depend on
+   * the geometry (a single number such as an opacity) and would be wrong for
+   * one that does (a per-vertex list), so a field of the second kind needs the
+   * format's own answer before anyone adds one.
+   *
+   * A copy or remix built by spreading a model keeps `extra` along with every
+   * other setting. A caller that wants the shape alone drops it.
+   */
+  extra?: Record<string, unknown>
   updatedAt: number
 }
 
@@ -220,6 +245,79 @@ export function blankName(name: string): boolean {
  */
 const NULL_REFUSED = ['ticks', 'palette', 'facecolors', 'up', 'spin', 'refs', 'parts'] as const
 
+/**
+ * Every payload field this library reads (DECK-0003 §1.1), and `type`, the
+ * legacy field it ignores (§1.1a). Anything else is carried in `extra`.
+ * `type` is known so that it is dropped rather than carried: a publisher
+ * SHOULD NOT write it, and carrying it would write it again on every edit.
+ */
+export const PAYLOAD_FIELDS = [
+  'v', 'type', 'name', 'unit', 'extent', 'mode', 'vertices', 'ticks', 'colors', 'faces', 'facecolors', 'palette', 'up', 'spin', 'refs', 'parts',
+] as const satisfies ReadonlyArray<keyof ShardPayload | 'type'>
+/**
+ * Compile-time: every field of ShardPayload is in PAYLOAD_FIELDS. A field added
+ * to the payload and its reader but not to the list would otherwise be read
+ * onto the model and carried in `extra` as well, and the stale carried copy
+ * would be written over the one this library computed. Adding a field to the
+ * list also needs a lift (LIFTS below) for models saved before it was known.
+ */
+type Unlisted = Exclude<keyof ShardPayload, (typeof PAYLOAD_FIELDS)[number]>
+const everyFieldListed: [Unlisted] extends [never] ? true : Unlisted = true
+void everyFieldListed
+const KNOWN = new Set<string>(PAYLOAD_FIELDS)
+
+/**
+ * How each field that this library learned to read after it began carrying
+ * unknown fields (0.1.17) is lifted out of `extra`. A model saved by an older
+ * version holds such a field in `extra`; once the field is known, `toPayload`
+ * no longer writes it from there, so without a lift it would be dropped at the
+ * next publish. The lift runs when a stored model is loaded (normalizeStored),
+ * never at write time, where a value the author has since cleared would come
+ * back. Each lift reads the value as that field's own reader does, and leaves
+ * a model that already has the field as it is.
+ */
+const LIFTS: Record<string, (s: ShardModel, value: unknown) => ShardModel> = {}
+
+/**
+ * `s` with every field in `extra` that this version knows taken out of it:
+ * lifted onto the model where there is a lift for it, dropped otherwise
+ * (a known field is always the one this library computes). The same model
+ * when there is nothing to do.
+ */
+export function liftKnown(s: ShardModel): ShardModel {
+  const extra = s.extra
+  if (!extra || !Object.keys(extra).some((k) => KNOWN.has(k))) return s
+  const { extra: _carried, ...bare } = s
+  let out: ShardModel = bare
+  for (const [k, v] of Object.entries(extra)) if (KNOWN.has(k) && LIFTS[k]) out = LIFTS[k](out, v)
+  const rest = Object.entries(extra).filter(([k]) => !KNOWN.has(k))
+  return rest.length ? { ...out, extra: Object.fromEntries(rest) } : out
+}
+
+/**
+ * The fields of `p` this library does not know, as a fresh object, or
+ * undefined when there are none. Built with Object.fromEntries, which defines
+ * each key as a plain property of its own, so a payload carrying a key named
+ * `__proto__` (JSON.parse makes it an ordinary own key) is carried as data and
+ * can never reach an object's prototype. The values are deep copies: the
+ * model never shares structure with the event it was read from. A value that
+ * cannot be copied (a function or a symbol, which no JSON payload can hold)
+ * is left behind rather than thrown on.
+ */
+export function unknownFields(p: object): Record<string, unknown> | undefined {
+  const entries: Array<[string, unknown]> = []
+  for (const [k, v] of Object.entries(p)) {
+    if (KNOWN.has(k) || v === undefined) continue
+    try { entries.push([k, structuredClone(v)]) } catch { /* not data: not carried */ }
+  }
+  return entries.length ? Object.fromEntries(entries) : undefined
+}
+
+/** The carried fields to write: `extra` without anything this library computes. Not copied again. */
+function carried(extra: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined))
+}
+
 /** Default half-width of the build grid, in units; each shard keeps its own (`extent`). */
 export const GRID_HALF = 8
 export const MIN_EXTENT = 1
@@ -294,7 +392,9 @@ export function validPoint(p: [number, number, number], extent: number = GRID_HA
  * such a model shows itself by a coordinate no grid could hold (above
  * MAX_EXTENT units). Those are split back into units and ticks.
  */
-export function normalizeStored(s: ShardModel): ShardModel {
+export function normalizeStored(saved: ShardModel): ShardModel {
+  // A field an older version carried in `extra` and this one knows (liftKnown).
+  const s = liftKnown(saved)
   // Models from before the pose have no `up` or `spin`: they lie as built.
   const stored = s as Partial<ShardModel>
   const posed = stored.up === undefined || stored.spin === undefined ? { ...s, up: stored.up ?? false, spin: stored.spin ?? 0 } : s
@@ -416,6 +516,10 @@ export function toPayload(s: ShardModel): ShardPayload {
     // Earth where it is hidden, which is a Cyberspace idea; here an object has
     // no place, so they travel untouched and nothing applies them.
     ...(s.up ? { up: true as const, spin: wrapSpin(s.spin) } : {}),
+    // Fields this library does not know, written back as they were read
+    // (ShardModel.extra). Last, and filtered again, so a known field is always
+    // the one this library computed and can never be replaced by a stray copy.
+    ...(s.extra ? carried(s.extra) : {}),
   }
 }
 
@@ -632,6 +736,7 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     parts = []
     for (const e of p.parts) { const part = readPart(e, refs?.length ?? 0, p.v === WIRE_VERSION); if (!part) return null; parts.push(part) }
   }
+  const extra = unknownFields(p)
   const extent = Number.isInteger(p.extent) && (p.extent as number) >= MIN_EXTENT && (p.extent as number) <= MAX_EXTENT ? (p.extent as number) : GRID_HALF
   return {
     id,
@@ -651,6 +756,8 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     spin: up ? wrapSpin(Number(p.spin ?? 0)) : 0,
     ...(refs && refs.length ? { refs } : {}),
     ...(parts && parts.length ? { parts } : {}),
+    // Carried, never read: what a newer version of the format added (§5).
+    ...(extra ? { extra } : {}),
     updatedAt: Date.now(),
   }
 }
