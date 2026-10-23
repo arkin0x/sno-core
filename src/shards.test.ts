@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { PLACEHOLDER_NAME, TICKS_PER_UNIT, blankName, expandFaceColors, flatten, fromPayload, newShard, normalizeStored, packFaceColors, packTicks, ticksOf, toPayload, toRender, unitsLabel, unpackFaceColors, unpackTicks, validFace, validPoint, vertexAt, type ShardModel } from './shards.js'
+import { OPACITY_FLOOR, PLACEHOLDER_NAME, TICKS_PER_UNIT, blankName, drawnOpacity, readOpacity, expandFaceColors, flatten, fromPayload, newShard, normalizeStored, packFaceColors, packTicks, ticksOf, toPayload, toRender, unitsLabel, unpackFaceColors, unpackTicks, validFace, validPoint, vertexAt, type ShardModel } from './shards.js'
 import { BUILT_IN, indexOf, readPalette, remap, resolvePalette } from './snoPalette.js'
 
 const tri: ShardModel = {
@@ -610,10 +610,11 @@ describe('a version 2 payload whose colours predate the palette', () => {
 })
 
 describe('fields this version does not know survive a round trip (DECK-0003 §5)', () => {
-  // A field from a later version of the format. An older editor must carry
+  // A field from a later version of the format (not `sheen`, which this
+  // version knows: see below). An older editor must carry
   // it through an edit, or the first person to open and republish the object
   // with that editor would strip it for everyone after them.
-  const later = { opacity: 50, glow: { strength: 3, tint: [1, 2, 3] }, notes: ['a', 'b'], flag: false, zero: 0, nothing: null }
+  const later = { sheen: 50, glow: { strength: 3, tint: [1, 2, 3] }, notes: ['a', 'b'], flag: false, zero: 0, nothing: null }
 
   it('reads them into `extra`, and writes them back unchanged', () => {
     const wire = JSON.parse(JSON.stringify({ ...toPayload(tri), ...later }))
@@ -639,19 +640,19 @@ describe('fields this version does not know survive a round trip (DECK-0003 §5)
   })
 
   it('drops the legacy `type` rather than carrying it (§1.1a)', () => {
-    const s = fromPayload({ ...toPayload(tri), type: 'shard', opacity: 50 }, 'x')!
-    expect(s.extra).toEqual({ opacity: 50 })
+    const s = fromPayload({ ...toPayload(tri), type: 'shard', sheen: 50 }, 'x')!
+    expect(s.extra).toEqual({ sheen: 50 })
     expect(toPayload(s)).not.toHaveProperty('type')
   })
 
   it('never lets a carried copy replace a field this library computes', () => {
     const s = fromPayload(toPayload(tri), 'x')!
-    const tampered: ShardModel = { ...s, extra: { name: 'evil', mode: 'points', unit: 99, opacity: 50 } }
+    const tampered: ShardModel = { ...s, extra: { name: 'evil', mode: 'points', unit: 99, sheen: 50 } }
     const out = toPayload(tampered)
     expect(out.name).toBe('tri')
     expect(out.mode).toBe('solid')
     expect(out.unit).toBe(3)
-    expect((out as unknown as Record<string, unknown>).opacity).toBe(50)
+    expect((out as unknown as Record<string, unknown>).sheen).toBe(50)
   })
 
   it('copies what it carries: the model never shares structure with the event', () => {
@@ -673,6 +674,65 @@ describe('fields this version does not know survive a round trip (DECK-0003 §5)
   })
 
   it('still refuses a payload whose known fields are malformed, whatever else it carries', () => {
-    expect(fromPayload({ ...toPayload(tri), mode: 'voxels', opacity: 50 }, 'x')).toBeNull()
+    expect(fromPayload({ ...toPayload(tri), mode: 'voxels', sheen: 50 }, 'x')).toBeNull()
+  })
+})
+
+describe('opacity (DECK-0003 §1.11)', () => {
+  const wire = (extra: Record<string, unknown>) => JSON.parse(JSON.stringify({ ...toPayload(tri), ...extra }))
+
+  it('reads a whole percent and writes it back', () => {
+    const s = fromPayload(wire({ opacity: 50 }), 'x')!
+    expect(s.opacity).toBe(50)
+    expect(s).not.toHaveProperty('extra')
+    expect(toPayload(s).opacity).toBe(50)
+    expect(drawnOpacity(s)).toBe(0.5)
+  })
+
+  it('treats absent and 100 as fully opaque, and never writes 100 (canonical form)', () => {
+    const absent = fromPayload(wire({}), 'x')!
+    expect(absent).not.toHaveProperty('opacity')
+    expect(drawnOpacity(absent)).toBe(1)
+    expect(toPayload(absent)).not.toHaveProperty('opacity')
+    const full = fromPayload(wire({ opacity: 100 }), 'x')!
+    expect(full).not.toHaveProperty('opacity')
+    expect(toPayload(full)).not.toHaveProperty('opacity')
+    expect(toPayload({ ...tri, opacity: 100 })).not.toHaveProperty('opacity')
+  })
+
+  it('draws 1 to 9 at the floor, and keeps the value as written', () => {
+    for (const v of [1, 5, 9]) {
+      const s = fromPayload(wire({ opacity: v }), 'x')!
+      expect(s.opacity).toBe(v)
+      expect(drawnOpacity(s)).toBe(OPACITY_FLOOR / 100)
+      expect(toPayload(s).opacity).toBe(v)
+    }
+    expect(drawnOpacity({ opacity: 10 })).toBe(0.1)
+    expect(drawnOpacity({ opacity: 99 })).toBe(0.99)
+  })
+
+  it('repairs a malformed value to opaque rather than refusing the object', () => {
+    for (const bad of [0, -5, 101, 50.5, '50', true, null, [50], { v: 50 }]) {
+      const s = fromPayload(wire({ opacity: bad }), 'x')
+      expect(s, JSON.stringify(bad)).not.toBeNull()
+      expect(s!).not.toHaveProperty('opacity')
+      expect(drawnOpacity(s!)).toBe(1)
+      // Known, so neither carried as an unknown field nor written back.
+      expect(s!).not.toHaveProperty('extra')
+      expect(toPayload(s!)).not.toHaveProperty('opacity')
+    }
+    expect(readOpacity(undefined)).toBeUndefined()
+  })
+
+  it('survives an edit made with the ordinary spread', () => {
+    const s = fromPayload(wire({ opacity: 40 }), 'x')!
+    const moved: ShardModel = { ...s, vertices: s.vertices.map((v, i) => (i === 0 ? { ...v, p: [1, 1, 1] } : v)) }
+    expect(toPayload(moved).opacity).toBe(40)
+  })
+
+  it('never writes an invalid value a caller put on the model', () => {
+    expect(toPayload({ ...tri, opacity: 0 })).not.toHaveProperty('opacity')
+    expect(toPayload({ ...tri, opacity: 33.3 })).not.toHaveProperty('opacity')
+    expect(drawnOpacity({ opacity: 0 })).toBe(1)
   })
 })

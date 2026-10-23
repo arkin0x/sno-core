@@ -131,6 +131,12 @@ export interface ShardModel {
    * it as its own version of the format says.
    */
   extra?: Record<string, unknown>
+  /**
+   * How opaque the object is drawn, a whole percent 1 to 100 (DECK-0003 §1.11).
+   * Absent means 100, fully opaque, which is every object written before the
+   * field existed. Kept exactly as read; `drawnOpacity` applies the floor.
+   */
+  opacity?: number
   updatedAt: number
 }
 
@@ -199,6 +205,8 @@ export interface ShardPayload {
    * default and not the same as colour 0 (DECK-0003 §1.4a).
    */
   facecolors?: number[]
+  /** A whole percent 1 to 100; absent means 100 (DECK-0003 §1.11). Omitted when 100. */
+  opacity?: number
   /** Present and true when the shard stands on the Earth where it is hidden (lib/pose.ts). Absent otherwise. */
   up?: true
   /** With `up`: the compass bearing +Z faces, a whole number 0..359. Ignored without `up`. */
@@ -244,7 +252,7 @@ const NULL_REFUSED = ['ticks', 'palette', 'facecolors', 'up', 'spin', 'refs', 'p
  * SHOULD NOT write it, and carrying it would write it again on every edit.
  */
 export const PAYLOAD_FIELDS: readonly string[] = [
-  'v', 'type', 'name', 'unit', 'extent', 'mode', 'vertices', 'ticks', 'colors', 'faces', 'facecolors', 'palette', 'up', 'spin', 'refs', 'parts',
+  'v', 'type', 'name', 'unit', 'extent', 'mode', 'vertices', 'ticks', 'colors', 'faces', 'facecolors', 'palette', 'up', 'spin', 'refs', 'parts', 'opacity',
 ]
 const KNOWN = new Set(PAYLOAD_FIELDS)
 
@@ -429,6 +437,33 @@ function readPart(e: unknown, refCount: number, mirror: boolean): Part | null {
   return { ref, at: mirror ? [x, y, 0 - z] : [x, y, z], turn: mirror ? mirrorTurn(turn) : turn, step }
 }
 
+/** The least opacity an object is drawn at, in percent: nothing is ever wholly invisible (DECK-0003 §1.11). */
+export const OPACITY_FLOOR = 10
+
+/**
+ * The `opacity` a payload carries, or undefined for fully opaque.
+ *
+ * A malformed value (not an integer, outside 1..100, null, a string) is
+ * repaired to opaque rather than refused, as `extent` is repaired (§1.11):
+ * opaque is always a correct way to draw an object, so a bad value costs the
+ * author their translucency and nothing else. 100 reads as absent too, so a
+ * model only ever holds 1 to 99.
+ */
+export function readOpacity(raw: unknown): number | undefined {
+  return Number.isInteger(raw) && (raw as number) >= 1 && (raw as number) < 100 ? (raw as number) : undefined
+}
+
+/**
+ * The opacity to draw `s` at, as a fraction from 0.1 to 1: its own percent
+ * with the floor applied, or 1 when it has none. A placed object's comes from
+ * its own model, never from the object that places it (§1.10), and a reader
+ * drawing an avatar ignores it altogether (§3.3).
+ */
+export function drawnOpacity(s: Pick<ShardModel, 'opacity'>): number {
+  const o = readOpacity(s.opacity)
+  return o === undefined ? 1 : Math.max(o, OPACITY_FLOOR) / 100
+}
+
 export function toPayload(s: ShardModel): ShardPayload {
   const vertices = s.vertices.map(flipZ)
   const palette = s.palette ?? BUILT_IN
@@ -457,6 +492,8 @@ export function toPayload(s: ShardModel): ShardPayload {
     // Earth where it is hidden, which is a Cyberspace idea; here an object has
     // no place, so they travel untouched and nothing applies them.
     ...(s.up ? { up: true as const, spin: wrapSpin(s.spin) } : {}),
+    // §1.11: written only below 100, the canonical form, and only when valid.
+    ...(readOpacity(s.opacity) !== undefined ? { opacity: s.opacity } : {}),
     // Fields this library does not know, written back as they were read
     // (ShardModel.extra). Last, and filtered again, so a known field is always
     // the one this library computed and can never be replaced by a stray copy.
@@ -678,6 +715,7 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     for (const e of p.parts) { const part = readPart(e, refs?.length ?? 0, p.v === WIRE_VERSION); if (!part) return null; parts.push(part) }
   }
   const extra = unknownFields(p)
+  const opacity = readOpacity(p.opacity)
   const extent = Number.isInteger(p.extent) && (p.extent as number) >= MIN_EXTENT && (p.extent as number) <= MAX_EXTENT ? (p.extent as number) : GRID_HALF
   return {
     id,
@@ -699,6 +737,7 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     ...(parts && parts.length ? { parts } : {}),
     // Carried, never read: what a newer version of the format added (§5).
     ...(extra ? { extra } : {}),
+    ...(opacity !== undefined ? { opacity } : {}),
     updatedAt: Date.now(),
   }
 }

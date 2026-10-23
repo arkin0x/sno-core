@@ -28,6 +28,13 @@ version of the format wrote, edit it and publish it again without stripping
 what it did not understand (DECK-0003 §5). The legacy `type` field is the one
 exception: it is dropped, as §1.1a asks.
 
+**Opacity.** `ShardModel.opacity` is the payload's `opacity`, a whole percent 1
+to 99 (absent or 100 is fully opaque, and is never written). A malformed value
+reads as opaque rather than refusing the object. `drawnOpacity(model)` is what a
+renderer multiplies by: the percent as a fraction, never below
+`OPACITY_FLOOR` (10%). A placed object uses its own, never its parent's, and an
+avatar ignores it (DECK-0003 §1.11).
+
 ## What is in it
 
 | Module | What it is |
