@@ -115,6 +115,14 @@ export interface ShardModel {
    */
   parts?: Part[]
   /**
+   * How opaque the object is drawn, a whole percent (DECK-0003 §1.11). Absent
+   * means fully opaque, which is every object written before the field
+   * existed. A model from `fromPayload` or `normalizeStored` holds 1 to 99 or
+   * nothing (100 and malformed values read as absent); 1 to 9 are kept as
+   * written and drawn at the floor by `drawnOpacity`.
+   */
+  opacity?: number
+  /**
    * The payload's fields this library does not know, kept exactly as they came
    * so that reading an object and writing it back does not strip them. DECK-0003
    * §5 has a reader ignore what it does not recognise; carrying it through an
@@ -207,6 +215,8 @@ export interface ShardPayload {
    * default and not the same as colour 0 (DECK-0003 §1.4a).
    */
   facecolors?: number[]
+  /** A whole percent 1 to 100; absent means 100 (DECK-0003 §1.11). Omitted when 100. */
+  opacity?: number
   /** Present and true when the shard stands on the Earth where it is hidden (lib/pose.ts). Absent otherwise. */
   up?: true
   /** With `up`: the compass bearing +Z faces, a whole number 0..359. Ignored without `up`. */
@@ -239,9 +249,10 @@ export function blankName(name: string): boolean {
 
 /**
  * The optional payload fields that are refused when written as null
- * (DECK-0003 §1.1): null is not absence. `extent` is not among them, because
- * it is repaired rather than validated and null is one more malformed value
- * that means 8; `type` is not among them because it is ignored whatever it is.
+ * (DECK-0003 §1.1): null is not absence. `extent` and `opacity` are not among
+ * them, because each is repaired rather than validated and null is one more
+ * malformed value (8 for `extent`, fully opaque for `opacity`, §1.11); `type`
+ * is not among them because it is ignored whatever it is.
  */
 const NULL_REFUSED = ['ticks', 'palette', 'facecolors', 'up', 'spin', 'refs', 'parts'] as const
 
@@ -252,7 +263,7 @@ const NULL_REFUSED = ['ticks', 'palette', 'facecolors', 'up', 'spin', 'refs', 'p
  * SHOULD NOT write it, and carrying it would write it again on every edit.
  */
 export const PAYLOAD_FIELDS = [
-  'v', 'type', 'name', 'unit', 'extent', 'mode', 'vertices', 'ticks', 'colors', 'faces', 'facecolors', 'palette', 'up', 'spin', 'refs', 'parts',
+  'v', 'type', 'name', 'unit', 'extent', 'mode', 'vertices', 'ticks', 'colors', 'faces', 'facecolors', 'palette', 'up', 'spin', 'refs', 'parts', 'opacity',
 ] as const satisfies ReadonlyArray<keyof ShardPayload | 'type'>
 /**
  * Compile-time: every field of ShardPayload is in PAYLOAD_FIELDS. A field added
@@ -276,7 +287,16 @@ const KNOWN = new Set<string>(PAYLOAD_FIELDS)
  * back. Each lift reads the value as that field's own reader does, and leaves
  * a model that already has the field as it is.
  */
-const LIFTS: Record<string, (s: ShardModel, value: unknown) => ShardModel> = {}
+const LIFTS: Record<string, (s: ShardModel, value: unknown) => ShardModel> = {
+  // 0.1.18: `opacity` (DECK-0003 §1.11). Read as the field's reader reads it,
+  // so a malformed carried value lifts to nothing, which is opaque.
+  opacity: (s, value) => {
+    // A valid value of the model's own wins; a malformed one gives way.
+    if (readOpacity(s.opacity) !== undefined) return s
+    const o = readOpacity(value)
+    return o === undefined ? s : { ...s, opacity: o }
+  },
+}
 
 /**
  * `s` with every field in `extra` that this version knows taken out of it:
@@ -393,8 +413,13 @@ export function validPoint(p: [number, number, number], extent: number = GRID_HA
  * MAX_EXTENT units). Those are split back into units and ticks.
  */
 export function normalizeStored(saved: ShardModel): ShardModel {
-  // A field an older version carried in `extra` and this one knows (liftKnown).
-  const s = liftKnown(saved)
+  // A field an older version carried in `extra` and this one knows (liftKnown),
+  // then an opacity a stored model holds read as the field's reader reads it
+  // (§1.11): 100 or a malformed value (a bug, or null after storage) is absent.
+  const lifted = liftKnown(saved)
+  const { opacity: _held, ...bare } = lifted
+  const opacity = readOpacity(lifted.opacity)
+  const s: ShardModel = lifted.opacity === opacity ? lifted : opacity === undefined ? bare : { ...bare, opacity }
   // Models from before the pose have no `up` or `spin`: they lie as built.
   const stored = s as Partial<ShardModel>
   const posed = stored.up === undefined || stored.spin === undefined ? { ...s, up: stored.up ?? false, spin: stored.spin ?? 0 } : s
@@ -488,6 +513,33 @@ function readPart(e: unknown, refCount: number, mirror: boolean): Part | null {
   return { ref, at: mirror ? [x, y, 0 - z] : [x, y, z], turn: mirror ? mirrorTurn(turn) : turn, step }
 }
 
+/** The least opacity an object is drawn at, in percent: nothing is ever wholly invisible (DECK-0003 §1.11). */
+export const OPACITY_FLOOR = 10
+
+/**
+ * The `opacity` a payload carries, or undefined for fully opaque.
+ *
+ * A malformed value (not an integer, outside 1..100, null, a string) is
+ * repaired to opaque rather than refused, as `extent` is repaired (§1.11):
+ * opaque is always a correct way to draw an object, so a bad value costs the
+ * author their translucency and nothing else. 100 reads as absent too, so a
+ * model only ever holds 1 to 99.
+ */
+export function readOpacity(raw: unknown): number | undefined {
+  return Number.isInteger(raw) && (raw as number) >= 1 && (raw as number) < 100 ? (raw as number) : undefined
+}
+
+/**
+ * The opacity to draw `s` at, as a fraction from 0.1 to 1: its own percent
+ * with the floor applied, or 1 when it has none. A placed object's comes from
+ * its own model, never from the object that places it (§1.10), and a reader
+ * drawing an avatar ignores it altogether (§3.3).
+ */
+export function drawnOpacity(s: Pick<ShardModel, 'opacity'>): number {
+  const o = readOpacity(s.opacity)
+  return o === undefined ? 1 : Math.max(o, OPACITY_FLOOR) / 100
+}
+
 export function toPayload(s: ShardModel): ShardPayload {
   const vertices = s.vertices.map(flipZ)
   const palette = s.palette ?? BUILT_IN
@@ -516,6 +568,8 @@ export function toPayload(s: ShardModel): ShardPayload {
     // Earth where it is hidden, which is a Cyberspace idea; here an object has
     // no place, so they travel untouched and nothing applies them.
     ...(s.up ? { up: true as const, spin: wrapSpin(s.spin) } : {}),
+    // §1.11: written only below 100, the canonical form, and only when valid.
+    ...(readOpacity(s.opacity) !== undefined ? { opacity: s.opacity } : {}),
     // Fields this library does not know, written back as they were read
     // (ShardModel.extra). Last, and filtered again, so a known field is always
     // the one this library computed and can never be replaced by a stray copy.
@@ -737,6 +791,7 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     for (const e of p.parts) { const part = readPart(e, refs?.length ?? 0, p.v === WIRE_VERSION); if (!part) return null; parts.push(part) }
   }
   const extra = unknownFields(p)
+  const opacity = readOpacity(p.opacity)
   const extent = Number.isInteger(p.extent) && (p.extent as number) >= MIN_EXTENT && (p.extent as number) <= MAX_EXTENT ? (p.extent as number) : GRID_HALF
   return {
     id,
@@ -757,6 +812,7 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     ...(refs && refs.length ? { refs } : {}),
     ...(parts && parts.length ? { parts } : {}),
     // Carried, never read: what a newer version of the format added (§5).
+    ...(opacity !== undefined ? { opacity } : {}),
     ...(extra ? { extra } : {}),
     updatedAt: Date.now(),
   }

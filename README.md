@@ -32,6 +32,13 @@ later version learns a field, `normalizeStored` lifts it out of `extra` for
 models saved before, so call it on every model you load from storage. A copy
 that should carry the shape alone drops `extra`.
 
+**Opacity.** `ShardModel.opacity` is the payload's `opacity`, a whole percent 1
+to 99 (absent or 100 is fully opaque, and is never written). A malformed value
+reads as opaque rather than refusing the object. `drawnOpacity(model)` is what a
+renderer multiplies by: the percent as a fraction, never below
+`OPACITY_FLOOR` (10%). A placed object uses its own, never its parent's, and an
+avatar ignores it (DECK-0003 §1.11).
+
 ## What is in it
 
 | Module | What it is |
