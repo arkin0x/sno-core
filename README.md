@@ -20,6 +20,14 @@ which is the arbiter when this package and the spec disagree.
 
 Section numbers in the comments here refer to that deck.
 
+**Fields it does not know are carried, not dropped.** `fromPayload` keeps any
+payload field this version does not read in `ShardModel.extra`, and
+`toPayload` writes it back after the fields it computes, which it never lets a
+carried copy replace. So an app on an older sno-core can open an object a newer
+version of the format wrote, edit it and publish it again without stripping
+what it did not understand (DECK-0003 §5). The legacy `type` field is the one
+exception: it is dropped, as §1.1a asks.
+
 ## What is in it
 
 | Module | What it is |

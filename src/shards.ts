@@ -114,6 +114,23 @@ export interface ShardModel {
    * vertices: the wire's with Z negated. See `Part`.
    */
   parts?: Part[]
+  /**
+   * The payload's fields this library does not know, kept exactly as they came
+   * so that reading an object and writing it back loses nothing (DECK-0003 §5:
+   * a reader ignores what it does not recognise, and an editor that publishes
+   * again must not strip it). Absent when there were none.
+   *
+   * A field added to the format after this version (say a new optional
+   * setting) would otherwise vanish the first time anyone with an older client
+   * opened the object, nudged one vertex and published: silently, and for
+   * everyone who reads the object after them. Carried here, it travels
+   * through every edit untouched, and the newer reader still finds it.
+   *
+   * Never read, only carried. Not validated, because this library cannot know
+   * what a field it does not know should look like; a newer reader validates
+   * it as its own version of the format says.
+   */
+  extra?: Record<string, unknown>
   updatedAt: number
 }
 
@@ -219,6 +236,30 @@ export function blankName(name: string): boolean {
  * that means 8; `type` is not among them because it is ignored whatever it is.
  */
 const NULL_REFUSED = ['ticks', 'palette', 'facecolors', 'up', 'spin', 'refs', 'parts'] as const
+
+/**
+ * Every payload field this library reads (DECK-0003 §1.1), and `type`, the
+ * legacy field it ignores (§1.1a). Anything else is carried in `extra`.
+ * `type` is known so that it is dropped rather than carried: a publisher
+ * SHOULD NOT write it, and carrying it would write it again on every edit.
+ */
+export const PAYLOAD_FIELDS: readonly string[] = [
+  'v', 'type', 'name', 'unit', 'extent', 'mode', 'vertices', 'ticks', 'colors', 'faces', 'facecolors', 'palette', 'up', 'spin', 'refs', 'parts',
+]
+const KNOWN = new Set(PAYLOAD_FIELDS)
+
+/**
+ * The fields of `p` this library does not know, as a fresh object, or
+ * undefined when there are none. Built with Object.fromEntries, which defines
+ * each key as a plain property of its own, so a payload carrying a key named
+ * `__proto__` (JSON.parse makes it an ordinary own key) is carried as data and
+ * can never reach an object's prototype. The values are deep copies: the
+ * model never shares structure with the event it was read from.
+ */
+export function unknownFields(p: object): Record<string, unknown> | undefined {
+  const entries = Object.entries(p).filter(([k, v]) => !KNOWN.has(k) && v !== undefined)
+  return entries.length ? Object.fromEntries(entries.map(([k, v]) => [k, structuredClone(v)])) : undefined
+}
 
 /** Default half-width of the build grid, in units; each shard keeps its own (`extent`). */
 export const GRID_HALF = 8
@@ -416,6 +457,10 @@ export function toPayload(s: ShardModel): ShardPayload {
     // Earth where it is hidden, which is a Cyberspace idea; here an object has
     // no place, so they travel untouched and nothing applies them.
     ...(s.up ? { up: true as const, spin: wrapSpin(s.spin) } : {}),
+    // Fields this library does not know, written back as they were read
+    // (ShardModel.extra). Last, and filtered again, so a known field is always
+    // the one this library computed and can never be replaced by a stray copy.
+    ...(s.extra ? unknownFields(s.extra) : {}),
   }
 }
 
@@ -632,6 +677,7 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     parts = []
     for (const e of p.parts) { const part = readPart(e, refs?.length ?? 0, p.v === WIRE_VERSION); if (!part) return null; parts.push(part) }
   }
+  const extra = unknownFields(p)
   const extent = Number.isInteger(p.extent) && (p.extent as number) >= MIN_EXTENT && (p.extent as number) <= MAX_EXTENT ? (p.extent as number) : GRID_HALF
   return {
     id,
@@ -651,6 +697,8 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     spin: up ? wrapSpin(Number(p.spin ?? 0)) : 0,
     ...(refs && refs.length ? { refs } : {}),
     ...(parts && parts.length ? { parts } : {}),
+    // Carried, never read: what a newer version of the format added (§5).
+    ...(extra ? { extra } : {}),
     updatedAt: Date.now(),
   }
 }
