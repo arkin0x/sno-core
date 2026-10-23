@@ -37,11 +37,25 @@
  * them inside the join, with the lower block's top, the upper block's sides
  * and the lower block's sides all meeting on its edges. Passing agreement
  * through such an edge is what used to turn a whole side of a shape inward,
- * depending on which face the walk happened to reach first. A face whose
- * rays cross an odd number of faces of the whole shard both ways is inside a
- * solid; it is reported so the bench can leave it undrawn, where it would only
- * fight the face it sits against. Degenerate faces (a repeated corner, or
- * corners on a line) are left as they came.
+ * depending on which face the walk happened to reach first. Degenerate faces
+ * (a repeated corner, or corners on a line) are left as they came.
+ *
+ * This pass says nothing about which faces to draw. It once also reported
+ * the faces "inside a join" (rays from the face's middle crossing an odd
+ * number of faces both ways), and both clients' benches left those out. The
+ * count is a fact about closed solids only, and a shard is rarely one: an
+ * open wall, two faces on one spot, or one solid standing in front of
+ * another flips it. In arkinox's "Stair run" (2026-10-23) the lower triangle
+ * of each low riser has its middle below the step in front, so its ray left
+ * through that step's front: one crossing out, odd crossings back, "inside",
+ * and undrawn, while the riser's other triangle drew. The bench showed every
+ * such stair with one triangle of a quad missing and the dark backs behind
+ * it, and a face FILLed there was added but never drawn. 18 of its 72 faces
+ * were dropped this way (8 of them in plain view from the front), 63 of 883
+ * across his published shards and 4465 of 56251 in the Maze Kit, where 1994
+ * of the 2225 in its smaller pieces can be seen from outside. A reader draws
+ * every face (DECK-0003 §1.4), so the report is gone, and with it a pass of
+ * rays from every face against every face on each FILL and each bench draw.
  */
 
 import { newell, type P3 } from './triangulate.js'
@@ -49,10 +63,8 @@ import { newell, type P3 } from './triangulate.js'
 type Face = [number, number, number]
 
 export interface Oriented {
-  /** The faces, rewound. */
+  /** The faces, rewound: every one of them, in the order given. */
   faces: Face[]
-  /** Which faces sit inside the solid, with faces on both sides of them. */
-  interior: boolean[]
 }
 
 const key = (a: number, b: number): string => (a < b ? `${a}>${b}` : `${b}>${a}`)
@@ -97,8 +109,7 @@ const SLANT: P3 = [0.0173, 0.0311, 0.0237]
 export function orientShard(points: P3[], faces: Face[]): Oriented {
   const out: Face[] = faces.map((f) => [f[0], f[1], f[2]])
   const n = out.length
-  const interior = new Array<boolean>(n).fill(false)
-  if (n === 0) return { faces: out, interior }
+  if (n === 0) return { faces: out }
 
   const flip = (f: Face): void => { const t = f[1]; f[1] = f[2]; f[2] = t }
   const hasDirected = (f: Face, a: number, b: number): boolean =>
@@ -129,13 +140,6 @@ export function orientShard(points: P3[], faces: Face[]): Oriented {
     if (degenerate[i]) return
     for (const [a, b] of edges(f)) byEdge.set(key(a, b), [...(byEdge.get(key(a, b)) ?? []), i])
   })
-
-  // Interior is a fact about the whole shard: a square buried between two
-  // blocks is buried whether or not the blocks share corners.
-  for (let i = 0; i < n; i++) {
-    if (degenerate[i]) continue
-    interior[i] = crossings(points, out, i, mid[i], dir[i]) % 2 === 1 && crossings(points, out, i, mid[i], back(dir[i])) % 2 === 1
-  }
 
   // Which way round is decided one connected solid at a time: the faces
   // reachable from each other across shared edges, of any count. Solids that
@@ -244,7 +248,7 @@ export function orientShard(points: P3[], faces: Face[]): Oriented {
       if (inward) for (const i of patch) flip(out[i])
     }
   }
-  return { faces: out, interior }
+  return { faces: out }
 }
 
 /** The faces rewound outward; see orientShard. */

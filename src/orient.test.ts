@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { orientFaces, orientShard } from './orient.js'
 import { newell, type P3 } from './triangulate.js'
 import { compile, STAMPS } from './stamps.js'
+import { fromPayload, toRender, ticksOf } from './shards.js'
+import { STAIR_RUN } from './stairRun.fixture.js'
 
 const outwardCount = (pts: P3[], faces: Array<[number, number, number]>): { outward: number; inward: number } => {
   const c = pts.reduce<P3>((a, p) => [a[0] + p[0] / pts.length, a[1] + p[1] / pts.length, a[2] + p[2] / pts.length], [0, 0, 0])
@@ -59,9 +61,9 @@ const ARCH_F: Array<[number, number, number]> = [[0,1,2],[0,2,3],[4,5,6],[4,6,7]
 const archPoints = (): P3[] => ARCH_P.map((p, i) => [p[0] + ARCH_T[i][0] / 120, p[1] + ARCH_T[i][1] / 120, 0 - (p[2] + ARCH_T[i][2] / 120)])
 
 describe('orientShard', () => {
-  it('turns every outer face of the arch outward, and finds the squares inside the joins', () => {
+  it('turns every outer face of the arch outward', () => {
     const pts = archPoints()
-    const { faces, interior } = orientShard(pts, ARCH_F)
+    const { faces } = orientShard(pts, ARCH_F)
     const n = (i: number): P3 => { const m = newell(faces[i].map((v) => pts[v])); const l = Math.hypot(...m); return [m[0] / l, m[1] / l, m[2] / l] }
     const expectDir = (i: number, d: P3): void => { const m = n(i); expect(m[0]).toBeCloseTo(d[0], 5); expect(m[1]).toBeCloseTo(d[1], 5); expect(m[2]).toBeCloseTo(d[2], 5) }
     // Right pillar: bottom down, +X side out, inner side toward the opening, both z sides out.
@@ -74,22 +76,19 @@ describe('orientShard', () => {
     expectDir(0, [0, -1, 0]); expectDir(8, [-1, 0, 0]); expectDir(10, [1, 0, 0]); expectDir(4, [0, 0, 1]); expectDir(6, [0, 0, -1])
     // The lintel's top up and its underside down.
     expectDir(31, [0, 1, 0]); expectDir(33, [0, 1, 0]); expectDir(41, [0, -1, 0]); expectDir(42, [0, -1, 0])
-    // Only the pillars' tops, buried under the lintel, are inside.
-    expect(interior.map((b, i) => (b ? i : -1)).filter((i) => i >= 0)).toEqual([2, 3, 13, 14])
   })
 
-  it('finds the square between two blocks stamped one on the other, and keeps the rest outward', () => {
+  it('keeps two blocks stamped one on the other outward', () => {
     const lower = compile('block', 1, 0, [0, 0, 0])
     const upper = compile('block', 1, 0, [0, 120, 0])
     const points: P3[] = [...lower.points, ...upper.points].map((p) => [p[0] / 120, p[1] / 120, 0 - p[2] / 120])
     const faces: Array<[number, number, number]> = [...lower.faces, ...upper.faces.map((f) => [f[0] + lower.points.length, f[1] + lower.points.length, f[2] + lower.points.length] as [number, number, number])]
-    const { faces: out, interior } = orientShard(points, faces)
-    const buried = interior.filter(Boolean).length
-    expect(buried).toBe(4)
-    out.forEach((f, i) => {
-      if (interior[i]) return
+    const { faces: out } = orientShard(points, faces)
+    out.forEach((f) => {
       const m = newell(f.map((v) => points[v]))
       const c = f.reduce((a, v) => [a[0] + points[v][0] / 3, a[1] + points[v][1] / 3, a[2] + points[v][2] / 3], [0, 0, 0])
+      // The square between the two, where the blocks meet, has no outside to face.
+      if (Math.abs(c[1] - 1) < 1e-9) return
       // Outward from the joined column's middle, at (0.5, 1, -0.5).
       expect((c[0] - 0.5) * m[0] + (c[1] - 1) * m[1] + (c[2] + 0.5) * m[2]).toBeGreaterThan(0)
     })
@@ -138,10 +137,9 @@ describe('orientShard, one solid at a time', () => {
     // corner or edge shared, eight faces in all.
     const pts: P3[] = [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1], [-1, 1, 1], [1, -1, 1], [1, 1, -1]]
     for (const start of [[...tetraFaces(0), ...tetraFaces(4)], [...tetraFaces(0), ...tetraFaces(4)].map(flipped)]) {
-      const { faces, interior } = orientShard(pts, start)
+      const { faces } = orientShard(pts, start)
       expect(faces).toHaveLength(8)
       expect(allOutwardFrom(pts, faces, [0, 0, 0])).toBe(true)
-      expect(interior.some(Boolean)).toBe(false)
     }
   })
 
@@ -186,6 +184,45 @@ describe('orientShard, one solid at a time', () => {
     const faces = orientFaces(pts, [...tetraFaces().map(flipped), ...junk])
     expect(allOutwardFrom(pts, faces.slice(0, 4), [0.5, 0.5, 0.5])).toBe(true)
     expect(faces.slice(4)).toEqual(junk)
-    expect(orientShard(pts, junk).interior).toEqual([false, false, false])
+    expect(orientShard(pts, junk).faces).toEqual(junk)
+  })
+})
+
+/**
+ * The guess winds faces and never hides one (DECK-0003 §1.4: a reader draws
+ * every face). It used to report faces "inside a join" by counting what rays
+ * from each face's middle crossed, both benches left those undrawn, and on
+ * shapes that are not one closed solid the count is wrong: arkinox's Stair
+ * run lost the lower triangle of each low riser (2026-10-23).
+ */
+/** orientShard's faces for the Stair run under 0.1.18, which still had the report. */
+const STAIR_RUN_WOUND_0_1_18: Array<[number, number, number]> = [[0,1,2],[0,2,3],[4,6,5],[4,7,6],[0,5,1],[0,4,5],[1,6,2],[1,5,6],[3,2,6],[3,6,7],[0,3,7],[0,7,4],[8,9,10],[8,10,11],[12,14,13],[12,15,14],[8,13,9],[8,12,13],[9,14,10],[9,13,14],[11,10,14],[11,14,15],[8,11,15],[8,15,12],[16,17,18],[16,18,19],[20,22,21],[20,23,22],[16,21,17],[16,20,21],[17,22,18],[17,21,22],[19,18,22],[19,22,23],[16,19,23],[16,23,20],[24,25,26],[24,26,27],[28,30,29],[28,31,30],[24,29,25],[24,28,29],[25,30,26],[25,29,30],[27,26,30],[27,30,31],[24,27,31],[24,31,28],[32,33,34],[32,34,35],[36,38,37],[36,39,38],[32,37,33],[32,36,37],[33,38,34],[33,37,38],[35,34,38],[35,38,39],[32,35,39],[32,39,36],[40,41,42],[40,42,43],[44,46,45],[44,47,46],[40,45,41],[40,44,45],[41,46,42],[41,45,46],[43,42,46],[43,46,47],[40,43,47],[40,47,44]]
+
+describe('orientShard says nothing about drawing', () => {
+  const stairs = fromPayload(STAIR_RUN, 'stair-run')!
+  const pts = stairs.vertices.map((v) => toRender(ticksOf(v)))
+
+  it('reads the Stair run as deployed: 48 vertices, 72 faces', () => {
+    expect(stairs.vertices).toHaveLength(48)
+    expect(stairs.faces).toHaveLength(72)
+  })
+
+  it('returns no report of which faces to leave out', () => {
+    expect(orientShard(pts, stairs.faces)).not.toHaveProperty('interior')
+  })
+
+  it('winds the Stair run exactly as 0.1.18 did: the report went, the winding did not change', () => {
+    expect(orientShard(pts, stairs.faces).faces).toEqual(STAIR_RUN_WOUND_0_1_18)
+    // Rewound first, all of it or every other face, it comes back the same: the guess winds, it does not echo.
+    expect(orientShard(pts, stairs.faces.map(([a, b, c]) => [a, c, b] as [number, number, number])).faces).toEqual(STAIR_RUN_WOUND_0_1_18)
+    expect(orientShard(pts, stairs.faces.map(([a, b, c], i) => (i % 2 ? [a, c, b] : [a, b, c]) as [number, number, number])).faces).toEqual(STAIR_RUN_WOUND_0_1_18)
+  })
+
+  it('has no report for the arch or a stamped pair of blocks either', () => {
+    expect(orientShard(archPoints(), ARCH_F)).not.toHaveProperty('interior')
+    const lower = compile('block', 1, 0, [0, 0, 0]), upper = compile('block', 1, 0, [0, 120, 0])
+    const points: P3[] = [...lower.points, ...upper.points].map((p) => [p[0] / 120, p[1] / 120, 0 - p[2] / 120])
+    const faces = [...lower.faces, ...upper.faces.map((f) => [f[0] + lower.points.length, f[1] + lower.points.length, f[2] + lower.points.length] as [number, number, number])]
+    expect(orientShard(points, faces)).not.toHaveProperty('interior')
   })
 })
