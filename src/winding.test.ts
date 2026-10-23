@@ -66,8 +66,8 @@ describe('the winding rule', () => {
     expect(before.slice(0, 2)).toEqual([1, 1])
     expect(before.slice(2).every((y) => y === -1)).toBe(true)
     expect(wireY(windOutward(s)).every((y) => y === 1)).toBe(true)
-    // Nothing inside: no face is buried in a join.
-    expect(orientShard(wirePoints(s), s.faces).interior.some(Boolean)).toBe(false)
+    // Every face is still there.
+    expect(orientShard(wirePoints(s), s.faces).faces).toHaveLength(258)
   })
 })
 

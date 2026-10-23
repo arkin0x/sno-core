@@ -47,7 +47,7 @@ avatar ignores it (DECK-0003 §1.11).
 | `snoPalette` | The 256-color built-in, palette parsing (events and pasted text), index lookup, remapping |
 | `stamps` | The seven stamps, their geometry, the cull between two that touch |
 | `triangulate` | Ear clipping and the Newell normal |
-| `orient` | The outward guess: winding a mesh outward, and finding the faces buried inside a join |
+| `orient` | The outward guess: winding a mesh outward (it never says which faces to draw: a reader draws them all) |
 | `winding` | Setting a face's front, which readers obey (DECK-0003 §1.4): FLIP FACE, FLIP SURFACE, AUTO, and new faces wound as they are made |
 | `outline` | The edges of a set of faces |
 | `fingerprint` | An object's shape as canonical text, one letter-only token per triangle, for a similarity fingerprint such as Fanfares' `X` tag: the same under vertex and face order, winding, translation and recoloring, different under rotation, scale and mirroring |
