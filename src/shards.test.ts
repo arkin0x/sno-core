@@ -703,13 +703,9 @@ describe('fields this version does not know survive a round trip (DECK-0003 §5)
     expect(stamped!.shard.extra).toEqual({ sheen: 3 })
   })
 
-  it('writes a payload that shares nothing with what it carries', () => {
-    const s = fromPayload({ ...toPayload(tri), glow: { strength: 3 } }, 'x')!
-    const out = toPayload(s) as unknown as Record<string, { strength: number }>
-    out.glow.strength = 9
-    // Shared is fine for the writer (the payload shares faces with the model
-    // too); what matters is that the carried value is written as it was read.
-    expect(JSON.parse(JSON.stringify(toPayload(fromPayload({ ...toPayload(tri), glow: { strength: 3 } }, 'y')!))).glow).toEqual({ strength: 3 })
+  it('writes a carried value as it was read', () => {
+    const s = fromPayload({ ...toPayload(tri), glow: { strength: 3, tint: [1, 2] } }, 'x')!
+    expect(JSON.parse(JSON.stringify(toPayload(s))).glow).toEqual({ strength: 3, tint: [1, 2] })
   })
 
   it('carries a nested __proto__ as data', () => {
