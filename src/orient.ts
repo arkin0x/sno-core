@@ -50,11 +50,12 @@
  * through that step's front: one crossing out, odd crossings back, "inside",
  * and undrawn, while the riser's other triangle drew. The bench showed every
  * such stair with one triangle of a quad missing and the dark backs behind
- * it, and a face FILLed there was added but never drawn. 18 of its 72 faces,
- * 63 of 883 across his published shards and 4465 of 56251 in the Maze Kit
- * were dropped this way, most of them in plain view. A reader draws every
- * face (DECK-0003 §1.4), so the report is gone, and with it a pass of rays
- * from every face against every face on each FILL and each bench draw.
+ * it, and a face FILLed there was added but never drawn. 18 of its 72 faces
+ * were dropped this way (8 of them in plain view from the front), 63 of 883
+ * across his published shards and 4465 of 56251 in the Maze Kit, where 1994
+ * of the 2225 in its smaller pieces can be seen from outside. A reader draws
+ * every face (DECK-0003 §1.4), so the report is gone, and with it a pass of
+ * rays from every face against every face on each FILL and each bench draw.
  */
 
 import { newell, type P3 } from './triangulate.js'

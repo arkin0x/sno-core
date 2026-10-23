@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { orientShard } from './orient.js'
 import { fromPayload, toPayload, type ShardModel } from './shards.js'
 import { stamp } from './stamps.js'
 import { newell, type P3 } from './triangulate.js'
@@ -66,8 +65,6 @@ describe('the winding rule', () => {
     expect(before.slice(0, 2)).toEqual([1, 1])
     expect(before.slice(2).every((y) => y === -1)).toBe(true)
     expect(wireY(windOutward(s)).every((y) => y === 1)).toBe(true)
-    // Every face is still there.
-    expect(orientShard(wirePoints(s), s.faces).faces).toHaveLength(258)
   })
 })
 

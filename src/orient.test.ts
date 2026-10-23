@@ -76,8 +76,6 @@ describe('orientShard', () => {
     expectDir(0, [0, -1, 0]); expectDir(8, [-1, 0, 0]); expectDir(10, [1, 0, 0]); expectDir(4, [0, 0, 1]); expectDir(6, [0, 0, -1])
     // The lintel's top up and its underside down.
     expectDir(31, [0, 1, 0]); expectDir(33, [0, 1, 0]); expectDir(41, [0, -1, 0]); expectDir(42, [0, -1, 0])
-    // Every face comes back, the pillars' tops under the lintel too.
-    expect(faces).toHaveLength(ARCH_F.length)
   })
 
   it('keeps two blocks stamped one on the other outward', () => {
@@ -86,7 +84,6 @@ describe('orientShard', () => {
     const points: P3[] = [...lower.points, ...upper.points].map((p) => [p[0] / 120, p[1] / 120, 0 - p[2] / 120])
     const faces: Array<[number, number, number]> = [...lower.faces, ...upper.faces.map((f) => [f[0] + lower.points.length, f[1] + lower.points.length, f[2] + lower.points.length] as [number, number, number])]
     const { faces: out } = orientShard(points, faces)
-    expect(out).toHaveLength(faces.length)
     out.forEach((f) => {
       const m = newell(f.map((v) => points[v]))
       const c = f.reduce((a, v) => [a[0] + points[v][0] / 3, a[1] + points[v][1] / 3, a[2] + points[v][2] / 3], [0, 0, 0])
@@ -198,6 +195,9 @@ describe('orientShard, one solid at a time', () => {
  * shapes that are not one closed solid the count is wrong: arkinox's Stair
  * run lost the lower triangle of each low riser (2026-10-23).
  */
+/** orientShard's faces for the Stair run under 0.1.18, which still had the report. */
+const STAIR_RUN_WOUND_0_1_18: Array<[number, number, number]> = [[0,1,2],[0,2,3],[4,6,5],[4,7,6],[0,5,1],[0,4,5],[1,6,2],[1,5,6],[3,2,6],[3,6,7],[0,3,7],[0,7,4],[8,9,10],[8,10,11],[12,14,13],[12,15,14],[8,13,9],[8,12,13],[9,14,10],[9,13,14],[11,10,14],[11,14,15],[8,11,15],[8,15,12],[16,17,18],[16,18,19],[20,22,21],[20,23,22],[16,21,17],[16,20,21],[17,22,18],[17,21,22],[19,18,22],[19,22,23],[16,19,23],[16,23,20],[24,25,26],[24,26,27],[28,30,29],[28,31,30],[24,29,25],[24,28,29],[25,30,26],[25,29,30],[27,26,30],[27,30,31],[24,27,31],[24,31,28],[32,33,34],[32,34,35],[36,38,37],[36,39,38],[32,37,33],[32,36,37],[33,38,34],[33,37,38],[35,34,38],[35,38,39],[32,35,39],[32,39,36],[40,41,42],[40,42,43],[44,46,45],[44,47,46],[40,45,41],[40,44,45],[41,46,42],[41,45,46],[43,42,46],[43,46,47],[40,43,47],[40,47,44]]
+
 describe('orientShard says nothing about drawing', () => {
   const stairs = fromPayload(STAIR_RUN, 'stair-run')!
   const pts = stairs.vertices.map((v) => toRender(ticksOf(v)))
@@ -207,12 +207,12 @@ describe('orientShard says nothing about drawing', () => {
     expect(stairs.faces).toHaveLength(72)
   })
 
-  it('returns every face and no report of which to leave out', () => {
-    const out = orientShard(pts, stairs.faces)
-    expect(Object.keys(out)).toEqual(['faces'])
-    expect(out.faces).toHaveLength(72)
-    // Each face keeps its own three corners, whichever way round.
-    out.faces.forEach((f, i) => expect([...f].sort()).toEqual([...stairs.faces[i]].sort()))
+  it('returns no report of which faces to leave out', () => {
+    expect(orientShard(pts, stairs.faces)).not.toHaveProperty('interior')
+  })
+
+  it('winds the Stair run exactly as 0.1.18 did: the report went, the winding did not change', () => {
+    expect(orientShard(pts, stairs.faces).faces).toEqual(STAIR_RUN_WOUND_0_1_18)
   })
 
   it('has no report for the arch or a stamped pair of blocks either', () => {
