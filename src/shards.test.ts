@@ -823,11 +823,21 @@ describe('opacity (DECK-0003 §1.11)', () => {
     expect(keys.slice(-4)).toEqual(['up', 'spin', 'opacity', 'sheen'])
   })
 
-  it('leaves the bytes of an object without opacity exactly as before', () => {
-    // Pinned from main before this change: a payload with no opacity is
-    // written byte for byte as it always was.
-    expect(JSON.stringify(toPayload(tri))).toBe(JSON.stringify(toPayload({ ...tri, opacity: undefined })))
-    expect(JSON.stringify(toPayload(tri))).not.toContain('opacity')
+  it('leaves the bytes of an object without opacity exactly as main wrote them', () => {
+    // Literal output of sno-core main at 43a5376 (0.1.17, before this field),
+    // so a change to key order, canonical form or any byte shows up here.
+    expect(JSON.stringify(toPayload(tri))).toBe('{"v":2,"name":"tri","unit":3,"extent":8,"mode":"solid","vertices":[[0,0,0],[2,0,0],[0,2,0]],"ticks":[-3],"colors":[238,235,239],"faces":[[0,1,2]]}')
+    const rich = {
+      v: 2, name: 'rich', unit: 2, extent: 9, mode: 'lines',
+      vertices: [[0, 0, 0], [1, 0, 0], [0, 1, -1], [1, 1, 1]], ticks: [-2, [0, 60, 30], [10, 0, 0]],
+      colors: [0, 1, 1, 0], faces: [[0, 1, 2], [1, 3, 2]], facecolors: [1, -1], palette: [[255, 0, 0], [0, 0, 255]],
+      up: true, spin: 90, refs: [['a', `33331:${'a'.repeat(64)}:d`, 'wss://r.example']], parts: [[0, 120, 0, -120, 0, 90, 0, 1]],
+      sheen: { s: 1 },
+    }
+    const main = '{"v":2,"name":"rich","unit":2,"extent":9,"mode":"lines","vertices":[[0,0,0],[1,0,0],[0,1,-1],[1,1,1]],"ticks":[-2,[0,60,30],[10,0,0]],"palette":[[255,0,0],[0,0,255]],"colors":[0,1,1,0],"facecolors":[1,-1],"refs":[["a","33331:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:d","wss://r.example"]],"parts":[[0,120,0,-120,0,90,0,1]],"faces":[[0,1,2],[1,3,2]],"up":true,"spin":90,"sheen":{"s":1}}'
+    expect(JSON.stringify(toPayload(fromPayload(rich, 'x')!))).toBe(main)
+    // With an opacity, the same bytes with the field after spin, before carried fields.
+    expect(JSON.stringify(toPayload(fromPayload({ ...rich, opacity: 40 }, 'x')!))).toBe(main.replace('"spin":90,', '"spin":90,"opacity":40,'))
   })
 
   it('repairs a malformed opacity a stored model holds when it is loaded', () => {
