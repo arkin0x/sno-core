@@ -25,8 +25,12 @@ payload field this version does not read in `ShardModel.extra`, and
 `toPayload` writes it back after the fields it computes, which it never lets a
 carried copy replace. So an app on an older sno-core can open an object a newer
 version of the format wrote, edit it and publish it again without stripping
-what it did not understand (DECK-0003 §5). The legacy `type` field is the one
-exception: it is dropped, as §1.1a asks.
+what it did not understand. (DECK-0003 §5 has readers ignore unknown fields;
+carrying them through an edit is this package's choice on top of that.) The
+legacy `type` field is the one exception: it is dropped, as §1.1a asks. When a
+later version learns a field, `normalizeStored` lifts it out of `extra` for
+models saved before, so call it on every model you load from storage. A copy
+that should carry the shape alone drops `extra`.
 
 **Opacity.** `ShardModel.opacity` is the payload's `opacity`, a whole percent 1
 to 99 (absent or 100 is fully opaque, and is never written). A malformed value
