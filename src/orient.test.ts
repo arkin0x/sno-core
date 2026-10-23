@@ -213,6 +213,9 @@ describe('orientShard says nothing about drawing', () => {
 
   it('winds the Stair run exactly as 0.1.18 did: the report went, the winding did not change', () => {
     expect(orientShard(pts, stairs.faces).faces).toEqual(STAIR_RUN_WOUND_0_1_18)
+    // Rewound first, all of it or every other face, it comes back the same: the guess winds, it does not echo.
+    expect(orientShard(pts, stairs.faces.map(([a, b, c]) => [a, c, b] as [number, number, number])).faces).toEqual(STAIR_RUN_WOUND_0_1_18)
+    expect(orientShard(pts, stairs.faces.map(([a, b, c], i) => (i % 2 ? [a, c, b] : [a, b, c]) as [number, number, number])).faces).toEqual(STAIR_RUN_WOUND_0_1_18)
   })
 
   it('has no report for the arch or a stamped pair of blocks either', () => {
