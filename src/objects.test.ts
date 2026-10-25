@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Fetched, MAX_PLACED, carriedModel, carriedTable, carryAll, carryObject, parseAddress, removeParts, resolveParts, uncarry, withAuthor, type FetchRef, type Placed } from './parts.js'
+import { Fetched, MAX_NODES, MAX_PLACED, carriedModel, carriedTable, carryAll, carryObject, parseAddress, removeParts, resolveParts, uncarry, withAuthor, type FetchRef, type Placed } from './parts.js'
 import { objectFromEvent } from './feed.js'
 import { fromPayload, liftKnown, normalizeStored, toPayload, type Ref, type ShardModel } from './shards.js'
 
@@ -412,3 +412,86 @@ describe('charging each placement to a budget by whose object it places', () => 
   })
 })
 
+
+describe('charging by budgetFor costs what is drawn, and has a ceiling (review of #23)', () => {
+  const P = (r: number, i: number): number[] => [r, i % 1000, 0, 0, 0, 0, 0, 0]
+  const count = (xs: Placed[]): { nodes: number; drawn: number; budget: number } => {
+    let nodes = 0, drawn = 0, budget = 0
+    const w = (ys: Placed[]) => { for (const y of ys) { nodes++; if (y.model) drawn++; if (y.missing === 'budget') budget++; w(y.children) } }
+    w(xs)
+    return { nodes, drawn, budget }
+  }
+  /** A chain of `levels` objects by THEM, each placing the next `n` times, fetched. */
+  const chain = (levels: number, n: number) => {
+    const relay: Record<string, unknown> = {}
+    for (let i = 0; i < levels; i++) relay[at('l' + i, THEM)] = payload({ name: 'l' + i, vertices: [], colors: [], refs: [ref('l' + (i + 1), THEM)], parts: Array.from({ length: n }, (_, j) => P(0, j)) })
+    relay[at('l' + levels, THEM)] = payload({ name: 'leaf' })
+    return { relay, root: read({ vertices: [], colors: [], refs: [ref('l0', THEM)], parts: Array.from({ length: n }, (_, j) => P(0, j)) }) }
+  }
+
+  it('asks budgetFor once per object, reference and parent budget, not once per placement', async () => {
+    const { relay, root } = chain(3, 2_000)
+    let asked = 0
+    const B = { left: MAX_PLACED }
+    const placed = await resolveParts(root, relayOf(relay).fetch, { author: ME, budget: B, budgetFor: (_a, parent) => { asked++; return parent } })
+    // Root, l0 and l1, one reference each: the budget is spent drawing l1's placements, so l2 is never walked.
+    expect(asked).toBe(3)
+    expect(B.left).toBe(0)
+    const got = count(placed)
+    expect(got.drawn).toBe(MAX_PLACED)
+  })
+
+  it('draws exactly what budgetFor-free resolving draws when budgetFor names the one budget', async () => {
+    const { relay, root } = chain(3, 2_000)
+    const strip = (xs: Placed[]): unknown => xs.map((x) => [x.part, x.ref, x.missing ?? null, x.model?.name ?? null, strip(x.children)])
+    const A = { left: MAX_PLACED }, B = { left: MAX_PLACED }
+    const plain = await resolveParts(root, relayOf(relay).fetch, { author: ME, budget: A })
+    const via = await resolveParts(root, relayOf(relay).fetch, { author: ME, budget: B, budgetFor: (_a, parent) => parent })
+    expect(strip(via)).toEqual(strip(plain))
+    expect(B.left).toBe(A.left)
+  })
+
+  it('a budget per author, however many, never returns more than MAX_NODES placements and placeholders, plus one per object drawn', async () => {
+    // 20 authors, each one's object placing every other's 20 times: a fresh MAX_PLACED budget per author.
+    const K = 20, PER = 20, pk = (i: number) => (i + 1).toString(16).padStart(64, '0')
+    const relay: Record<string, unknown> = {}
+    for (let i = 0; i < K; i++) {
+      const others = Array.from({ length: K }, (_, j) => j).filter((j) => j !== i)
+      relay[at('o', pk(i))] = payload({ name: 'o' + i, refs: others.map((j) => ref('o', pk(j))), parts: others.flatMap((_, r) => Array.from({ length: PER }, (_, p) => P(r, p))) })
+    }
+    const root = read({ vertices: [], colors: [], refs: Array.from({ length: K }, (_, i) => ref('o', pk(i))), parts: Array.from({ length: K }, (_, i) => P(i, 0)) })
+    const minted = new Map<string | null, { left: number }>()
+    const budgetFor = (author: string | null): { left: number } => { let b = minted.get(author); if (!b) minted.set(author, (b = { left: MAX_PLACED })); return b }
+    const placed = await resolveParts(root, relayOf(relay).fetch, { author: ME, budgetFor })
+    const got = count(placed)
+    expect(got.nodes).toBeLessThanOrEqual(MAX_NODES + got.drawn + 1)
+    expect(got.drawn).toBeLessThanOrEqual(MAX_NODES)
+  })
+
+  it('a budgetFor that answers nothing, throws, or names a frozen budget charges the parent, and the resolve still settles', async () => {
+    const root = read({ vertices: [], colors: [], refs: [ref('x')], parts: [P(0, 0), P(0, 1), P(0, 2)] })
+    const wrong: Array<(a: string | null, p: { left: number }) => { left: number }> = [
+      () => undefined as unknown as { left: number },
+      () => { throw new Error('boom') },
+      () => Object.freeze({ left: 5 }),
+      () => ({ left: 'many' }) as unknown as { left: number },
+    ]
+    for (const budgetFor of wrong) {
+      const B = { left: 2 }
+      const placed = await resolveParts(root, async () => payload(), { author: ME, budget: B, budgetFor })
+      expect(placed.filter((p) => p.model).length).toBe(2)
+      expect(placed.filter((p) => p.missing === 'budget').length).toBe(1)
+      expect(B.left).toBe(0)
+    }
+  })
+
+  it('a budget under 1 is spent: a fractional one draws its whole placements and no more', async () => {
+    const root = read({ vertices: [], colors: [], refs: [ref('x')], parts: [P(0, 0), P(0, 1), P(0, 2)] })
+    for (const [left, drawn] of [[0.5, 0], [1.5, 1], [-3, 0], [NaN, 0]] as const) {
+      const B = { left }
+      const placed = await resolveParts(root, async () => payload(), { author: ME, budgetFor: () => B })
+      expect(placed.filter((p) => p.model).length).toBe(drawn)
+      expect(placed.filter((p) => p.missing === 'budget').length).toBe(1)
+    }
+  })
+})

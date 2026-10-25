@@ -58,7 +58,7 @@ first, at every depth, then in the table of the event the placing object came
 in (an `a` fetch: the address's pubkey; an `e` fetch: the pubkey your fetch
 returns in a `Fetched`, else none), and fetches only what neither holds. It
 draws at most `MAX_PLACED` (20,000) placements per call; the rest are
-placeholders (`missing: 'budget'`). A client that spends one share on its own objects and another on strangers' passes `budgetFor(author, parent)`, which picks the budget each placement is charged to from the author of the object it places and the budget its parent was charged to; a level cut short has one placeholder per budget it ran out of.
+placeholders (`missing: 'budget'`). A client that spends one share on its own objects and another on strangers' passes `budgetFor(author, parent)`, which picks the budget each placement is charged to from the author of the object it places and the budget its parent was charged to; a level cut short has one placeholder per budget it ran out of. It is asked once per object, reference and parent budget, so its budgets should be a small fixed set (one per share); however many it names, one resolve returns at most `MAX_NODES` (40,000) placements and placeholders together.
 
 Writers: `carryObject` adds one, flattened into the one table with only the
 writer's own keys; `carryAll` carries what a lookup chooses at any depth,

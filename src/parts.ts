@@ -50,6 +50,15 @@ export type Missing =
  */
 export const MAX_PLACED = 20_000
 
+/**
+ * With `budgetFor`, the most nodes one resolve returns, placements and
+ * placeholders together, whatever budgets budgetFor names: past it, what is
+ * left of an object's placements is one placeholder ('budget'). Without
+ * budgetFor the one budget bounds a resolve already (at most its `left`
+ * placements and one placeholder per object drawn), and this does not apply.
+ */
+export const MAX_NODES = 2 * MAX_PLACED
+
 /** A placement with what it places, or why it is a placeholder. */
 export interface Placed {
   part: Part
@@ -217,8 +226,17 @@ export interface ResolveOptions {
    * Left out, every placement is charged to `budget`. A client that spends one
    * share on its own objects and another on strangers' passes this, so a
    * trusted object placing a stranger's charges that child, and all under it,
-   * to the strangers' share (lib/trust.ts in ONOSENDAI keeps it a stranger's
-   * from there down, so a stranger cannot reach your share by placing yours).
+   * to the strangers' share (and keeps it a stranger's from there down, so a
+   * stranger cannot reach your share by placing yours).
+   *
+   * Asked once per object, reference and parent budget, not per placement,
+   * so it must answer the same for the same author and parent within a
+   * resolve. Its budgets must come from a small fixed set the caller holds
+   * (one per share), never one per author: each budget spent cuts an object
+   * short with a placeholder of its own. However many it names, a resolve
+   * returns no more than MAX_NODES. An answer that is not a budget (not an
+   * object with a writable number `left`), or a throw, charges the parent's.
+   * A `left` under 1 is spent.
    */
   budgetFor?: (author: string | null, parent: { left: number }) => { left: number }
 }
@@ -274,6 +292,81 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
     if (got !== undefined) seen.set(address, got)
     return got
   }
+  const budgetFor = opts.budgetFor
+  // With budgetFor: every placement and placeholder returned, counted together.
+  const ceiling = { left: MAX_NODES }
+  const authors = new Map<string, string | null>()
+  const authorOf = (ref: Ref | undefined): string | null => {
+    if (!ref || ref[0] !== 'a') return null
+    if (!authors.has(ref[1])) authors.set(ref[1], pubkeyOf(ref[1]))
+    return authors.get(ref[1]) ?? null
+  }
+  const usable = (b: unknown): b is { left: number } => {
+    if (!b || typeof b !== 'object') return false
+    const d = Object.getOwnPropertyDescriptor(b, 'left')
+    return !!d && d.writable === true && typeof d.value === 'number'
+  }
+  const chargeTo = (ref: Ref | undefined, paid: { left: number }): { left: number } => {
+    let b: unknown
+    try { b = budgetFor!(authorOf(ref), paid) } catch { return paid }
+    return usable(b) ? b : paid
+  }
+  /** What a whole placement of a budget may still draw: a `left` under 1 (or not a number) is spent. */
+  const room = (b: { left: number }): number => (b.left >= 1 ? Math.floor(b.left) : 0)
+  // Per object and parent budget, its placements grouped by the budget each
+  // is charged to, in the order each budget is first met: asked once, not per
+  // placement, however often the object is drawn.
+  type Group = { budget: { left: number }; parts: number[] }
+  const plans = new Map<ShardModel, Map<{ left: number }, Group[]>>()
+  const planOf = (m: ShardModel, paid: { left: number }): Group[] => {
+    let byPaid = plans.get(m)
+    if (!byPaid) { byPaid = new Map(); plans.set(m, byPaid) }
+    let plan = byPaid.get(paid)
+    if (!plan) {
+      const refs = m.refs ?? []
+      const perRef = new Map<number, { left: number }>()
+      const groups = new Map<{ left: number }, number[]>()
+      ;(m.parts ?? []).forEach((part, i) => {
+        let b = perRef.get(part.ref)
+        if (!b) { b = chargeTo(refs[part.ref], paid); perRef.set(part.ref, b) }
+        let g = groups.get(b)
+        if (!g) { g = []; groups.set(b, g) }
+        g.push(i)
+      })
+      plan = [...groups].map(([budget, parts]) => ({ budget, parts }))
+      byPaid.set(paid, plan)
+    }
+    return plan
+  }
+  /**
+   * As if each placement were taken in order: drawn while the ceiling and its
+   * budget have room, one placeholder per budget at its first placement that
+   * does not fit, and once the ceiling is spent one placeholder for the rest.
+   * The work is what is returned, not every placement: each group gives only
+   * the placements its budget has room for and the one after.
+   */
+  const choose = (m: ShardModel, paid: { left: number }): { taken: Array<{ part: Part; charged: { left: number } }>; cut: Part[] } => {
+    const all = m.parts ?? []
+    if (!all.length) return { taken: [], cut: [] }
+    if (ceiling.left < 1) return { taken: [], cut: [all[0]] }
+    const plan = planOf(m, paid)
+    const events: Array<[number, number, boolean]> = []
+    plan.forEach(({ budget: b, parts }, g) => {
+      const k = Math.min(room(b), parts.length)
+      for (let i = 0; i < k; i++) events.push([parts[i], g, true])
+      if (k < parts.length) events.push([parts[k], g, false])
+    })
+    events.sort((x, y) => x[0] - y[0])
+    const taken: Array<{ part: Part; charged: { left: number } }> = []
+    const cut: Part[] = []
+    for (const [i, g, draw] of events) {
+      if (ceiling.left < 1) { cut.push(all[i]); break }
+      ceiling.left--
+      if (draw) { const b = plan[g].budget; b.left--; taken.push({ part: all[i], charged: b }) }
+      else cut.push(all[i])
+    }
+    return { taken, cut }
+  }
   /** `own` is the table of the event `m` travels in, when that is not the root's; `paid` is the budget `m`'s own placement was charged to. */
   const walk = async (m: ShardModel, depth: number, chain: Set<string>, own: Record<string, unknown> | undefined, paid: { left: number }): Promise<Placed[]> => {
     const refs = m.refs ?? []
@@ -282,18 +375,17 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
     // anything else is decided: a loop or a level past the depth bound is
     // drawn, so it is paid for. Counted here, synchronously, for the whole
     // level at once, so nothing below can start before its share is taken.
-    // Each to the budget budgetFor names (or `paid`), and once a budget is
+    // Each to the budget budgetFor names (or `budget`), and once a budget is
     // spent, what is left of this object's placements on it is one
     // placeholder, not one each: a reader never maps more than it draws.
-    const taken: Array<{ part: Part; charged: { left: number } }> = []
-    const cut = new Map<{ left: number }, Part>()
-    for (const part of all) {
-      const ref = refs[part.ref]
-      const author = ref && ref[0] === 'a' ? pubkeyOf(ref[1]) : null
-      const charged = opts.budgetFor ? opts.budgetFor(author, paid) : paid
-      if (charged.left > 0) { charged.left--; taken.push({ part, charged }) }
-      else if (!cut.has(charged)) cut.set(charged, part)
-    }
+    let taken: Array<{ part: Part; charged: { left: number } }>
+    let cut: Part[]
+    if (!budgetFor) {
+      const first = all.slice(0, Math.max(0, budget.left))
+      budget.left -= first.length
+      taken = first.map((part) => ({ part, charged: budget }))
+      cut = first.length < all.length ? [all[first.length]] : []
+    } else ({ taken, cut } = choose(m, paid))
     const over = (part: Part): Placed => ({ part, ref: refs[part.ref], model: null, missing: 'budget', children: [] })
     const drawn = await Promise.all(taken.map(async ({ part, charged }): Promise<Placed> => {
       const ref = refs[part.ref]
@@ -320,7 +412,7 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
       const children = got.parts ? await walk(got, depth + 1, new Set([...chain, key]), table, charged) : []
       return { part, ref, model: got, ...mark, children }
     }))
-    return cut.size ? [...drawn, ...[...cut.values()].map(over)] : drawn
+    return cut.length ? [...drawn, ...cut.map(over)] : drawn
   }
   return walk(model, 1, new Set(self ? [refKey(self)] : []), undefined, budget)
 }
