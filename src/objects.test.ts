@@ -587,4 +587,33 @@ describe('a resolve reads a bounded number of objects, and a budget it cannot wr
     expect(overall.left).toBe(0)
     expect(tally(third)).toMatchObject({ drawn: 2, objects: 2 })
   })
+
+  it("a stranger's placeholders never take your placements' place under the ceiling (review of #513)", async () => {
+    // Your shard: 18,000 of your rooms, each placing a stranger's object that places one more of theirs,
+    // then your tower, whose floor places your wall: fetched later than everything else.
+    const ROOMS = 18_000
+    const relay: Record<string, unknown> = {
+      [at('room')]: payload({ name: 'room', vertices: [], colors: [], refs: [ref('x', THEM)], parts: [P(0, 0)] }),
+      [at('x', THEM)]: payload({ name: 'x', refs: [ref('y', THEM)], parts: [P(0, 0)] }),
+      [at('y', THEM)]: payload({ name: 'y' }),
+      [at('tower')]: payload({ name: 'tower', vertices: [], colors: [], refs: [ref('floor')], parts: [P(0, 0)] }),
+      [at('floor')]: payload({ name: 'floor', vertices: [], colors: [], refs: [ref('wall')], parts: [P(0, 0)] }),
+      [at('wall')]: payload({ name: 'wall' }),
+    }
+    const root = read({ vertices: [], colors: [], refs: [ref('room'), ref('tower')], parts: [...Array.from({ length: ROOMS }, (_, i) => P(0, i)), P(1, 0)] })
+    const T = { left: MAX_PLACED }, S = { left: 4_000 }
+    const budgetFor = (author: string | null, parent: { left: number }) => (parent === S ? S : author === ME ? T : S)
+    const late = new Set([at('tower'), at('floor'), at('wall')])
+    const fetch: FetchRef = async (r) => { await new Promise((ok) => setTimeout(ok, late.has(r[1]) ? 20 : 0)); return relay[r[1]] ?? null }
+    const placed = await resolveParts(root, fetch, { author: ME, budget: T, budgetFor })
+    const tower = placed[ROOMS]
+    expect(tower.model?.name).toBe('tower')
+    expect(tower.children[0].model?.name).toBe('floor')
+    expect(tower.children[0].children[0].model?.name).toBe('wall')
+    expect(S.left).toBe(0)
+    const got = tally(placed)
+    expect(got.drawn).toBe(ROOMS + 3 + 4_000)
+    expect(got.nodes).toBeLessThanOrEqual(3 * MAX_NODES + 1)
+  })
 })
+

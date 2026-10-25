@@ -53,13 +53,16 @@ export type Missing =
 export const MAX_PLACED = 20_000
 
 /**
- * With `budgetFor`, the most placements and placeholders one resolve charges,
- * together, whatever budgets budgetFor names. Once it is spent, what is left
- * of each object's placements is one placeholder ('budget') more, uncharged,
- * so a resolve returns at most MAX_NODES plus one per object drawn: never
- * twice MAX_NODES. Without budgetFor the one budget bounds a resolve already
- * (at most its `left` placements and one placeholder per object drawn), and
- * this does not apply.
+ * With `budgetFor`, the most placements one resolve draws, whatever budgets
+ * budgetFor names, and apart from them the most placeholders it charges for
+ * spent budgets: a placeholder never takes a placement's place, so one
+ * share's cuts never stop another share's placements. Past either, an object
+ * cut short shows one placeholder ('budget') more, uncharged. So a resolve
+ * returns at most MAX_NODES placements, MAX_NODES placeholders, and one more
+ * placeholder per object drawn (at most three times MAX_NODES nodes in all).
+ * Without budgetFor the one budget bounds a resolve already (at most its
+ * `left` placements and one placeholder per object drawn), and this does not
+ * apply.
  */
 export const MAX_NODES = 2 * MAX_PLACED
 
@@ -255,7 +258,11 @@ export interface ResolveOptions {
   /**
    * The distinct objects this resolve may read, whatever budget each is
    * charged to (MAX_MODELS), shared as `budget` is. Left out, 2 x MAX_MODELS
-   * of its own.
+   * of its own: enough for two shares of MAX_MODELS each (yours and
+   * strangers'). It is a backstop, not a share, so it should be at least the
+   * sum of the shares' reads: a caller with more shares, or whose budgets
+   * carry `models` larger than MAX_MODELS, passes one that covers them, or the
+   * backstop cuts a share that still has reads left.
    */
   models?: { left: number }
   /**
@@ -266,17 +273,24 @@ export interface ResolveOptions {
    * Left out, every placement is charged to `budget`. A client that spends one
    * share on its own objects and another on strangers' passes this, so a
    * trusted object placing a stranger's charges that child, and all under it,
-   * to the strangers' share (and keeps it a stranger's from there down, so a
-   * stranger cannot reach your share by placing yours).
+   * to the strangers' share.
+   *
+   * It MUST be sticky: once a placement is charged to a stranger's share,
+   * every placement under it is charged to that share too (given a parent on
+   * the strangers' share, answer that share, whoever the author), and so are
+   * the objects those placements read (each read goes to its placement's
+   * budget). Otherwise a stranger reaches your share, for placements and for
+   * reads, by placing your objects under theirs.
    *
    * Asked once per author and parent budget for the whole resolve, not per
    * placement: its first answer for an author under a parent is the one every
    * later placement of theirs there is charged to. Its budgets must come from
    * a small fixed set the caller holds (one per share), never one per author:
    * each budget spent cuts an object short with a placeholder of its own.
-   * However many it names, a resolve charges no more than MAX_NODES (and then
-   * one placeholder per object drawn). An answer that is not a budget (not an
-   * object with a writable number `left`), or a throw, charges the parent's.
+   * However many it names, a resolve draws no more than MAX_NODES (and its
+   * placeholders are bounded apart from that: see MAX_NODES). An answer that
+   * is not a budget (not an object with a writable number `left`), or a
+   * throw, charges the parent's.
    * A `left` under 1 is spent.
    */
   budgetFor?: (author: string | null, parent: { left: number }) => { left: number }
@@ -359,8 +373,11 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
     return got
   }
   const budgetFor = opts.budgetFor
-  // With budgetFor: every placement and placeholder returned, counted together.
+  // With budgetFor: the placements taken (MAX_NODES), and apart from them the
+  // placeholders for spent budgets (MAX_NODES more), so a flood of one share's
+  // placeholders never stops another share's placements.
   const ceiling = { left: MAX_NODES }
+  const marks = { left: MAX_NODES }
   const authors = new Map<string, string | null>()
   const authorOf = (ref: Ref | undefined): string | null => {
     if (!ref || ref[0] !== 'a') return null
@@ -413,7 +430,8 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
   /**
    * As if each placement were taken in order: drawn while the ceiling and its
    * budget have room, one placeholder per budget at its first placement that
-   * does not fit, and once the ceiling is spent one placeholder for the rest.
+   * does not fit (charged to `marks`, never to the ceiling), and once the
+   * ceiling is spent one placeholder for the rest.
    * The work is what is returned, not every placement: each group gives only
    * the placements its budget has room for and the one after.
    */
@@ -422,6 +440,15 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
     if (!all.length) return { taken: [], cut: [] }
     if (ceiling.left < 1) return { taken: [], cut: [all[0]] }
     const plan = planOf(m, paid)
+    const taken: Array<{ part: Part; charged: { left: number } }> = []
+    const cut: Part[] = []
+    // A placeholder is charged to `marks`; once those are spent, this object
+    // still shows one, uncharged, so a reader always knows it was cut.
+    let spare = true
+    const mark = (i: number): void => {
+      if (marks.left >= 1) { marks.left--; cut.push(all[i]) }
+      else if (spare) { spare = false; cut.push(all[i]) }
+    }
     const events: Array<[number, number, boolean]> = []
     plan.forEach(({ budget: b, parts }, g) => {
       const k = Math.min(room(b), parts.length)
@@ -429,13 +456,13 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
       if (k < parts.length) events.push([parts[k], g, false])
     })
     events.sort((x, y) => x[0] - y[0])
-    const taken: Array<{ part: Part; charged: { left: number } }> = []
-    const cut: Part[] = []
     for (const [i, g, draw] of events) {
-      if (ceiling.left < 1) { cut.push(all[i]); break }
+      if (!draw) { mark(i); continue }
+      if (ceiling.left < 1) { mark(i); break }
       ceiling.left--
-      if (draw) { const b = plan[g].budget; b.left--; taken.push({ part: all[i], charged: b }) }
-      else cut.push(all[i])
+      const b = plan[g].budget
+      b.left--
+      taken.push({ part: all[i], charged: b })
     }
     return { taken, cut }
   }
