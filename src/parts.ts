@@ -258,7 +258,11 @@ export interface ResolveOptions {
   /**
    * The distinct objects this resolve may read, whatever budget each is
    * charged to (MAX_MODELS), shared as `budget` is. Left out, 2 x MAX_MODELS
-   * of its own.
+   * of its own: enough for two shares of MAX_MODELS each (yours and
+   * strangers'). It is a backstop, not a share, so it should be at least the
+   * sum of the shares' reads: a caller with more shares, or whose budgets
+   * carry `models` larger than MAX_MODELS, passes one that covers them, or the
+   * backstop cuts a share that still has reads left.
    */
   models?: { left: number }
   /**
@@ -269,8 +273,14 @@ export interface ResolveOptions {
    * Left out, every placement is charged to `budget`. A client that spends one
    * share on its own objects and another on strangers' passes this, so a
    * trusted object placing a stranger's charges that child, and all under it,
-   * to the strangers' share (and keeps it a stranger's from there down, so a
-   * stranger cannot reach your share by placing yours).
+   * to the strangers' share.
+   *
+   * It MUST be sticky: once a placement is charged to a stranger's share,
+   * every placement under it is charged to that share too (given a parent on
+   * the strangers' share, answer that share, whoever the author), and so are
+   * the objects those placements read (each read goes to its placement's
+   * budget). Otherwise a stranger reaches your share, for placements and for
+   * reads, by placing your objects under theirs.
    *
    * Asked once per author and parent budget for the whole resolve, not per
    * placement: its first answer for an author under a parent is the one every
@@ -278,8 +288,9 @@ export interface ResolveOptions {
    * a small fixed set the caller holds (one per share), never one per author:
    * each budget spent cuts an object short with a placeholder of its own.
    * However many it names, a resolve draws no more than MAX_NODES (and its
-   * placeholders are bounded apart from that: see MAX_NODES). An answer that is not a budget (not an
-   * object with a writable number `left`), or a throw, charges the parent's.
+   * placeholders are bounded apart from that: see MAX_NODES). An answer that
+   * is not a budget (not an object with a writable number `left`), or a
+   * throw, charges the parent's.
    * A `left` under 1 is spent.
    */
   budgetFor?: (author: string | null, parent: { left: number }) => { left: number }
