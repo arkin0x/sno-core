@@ -39,6 +39,8 @@ export type Missing =
   | 'scale'
   /** Past MAX_PLACED, the most placements one resolve draws. */
   | 'budget'
+  /** Past the distinct objects this resolve may read (MAX_MODELS): too many different objects, not too many placements. */
+  | 'objects'
 
 /**
  * The most placements one resolve draws, at every depth together, placeholders
@@ -62,12 +64,23 @@ export const MAX_PLACED = 20_000
 export const MAX_NODES = 2 * MAX_PLACED
 
 /**
- * The most distinct objects one resolve reads: fetches started and carried
- * entries parsed, together. Memory goes with the distinct objects a resolve
- * holds, not with how often each is placed (a floor of 129 tiles is one), so
- * past this a placement of an object not yet read is a placeholder
- * ('budget'), and nothing more is fetched; one already read is still drawn.
- * A whole kit of pieces is a few dozen; a resolve near this is a hostile one.
+ * The most distinct objects one budget reads in a resolve: fetches started
+ * and carried entries parsed, together. Memory goes with the distinct objects
+ * a resolve holds, not with how often each is placed (a floor of 129 tiles is
+ * one), so past this a placement of an object not yet read is a placeholder
+ * ('objects'), and nothing more is fetched; one already read is still drawn.
+ *
+ * Each read is charged to the budget its placement is charged to: to the
+ * budget's own `models`, when it has one (`{ left, models: { left } }`,
+ * shared as the budget is), else to MAX_MODELS of the resolve's own for that
+ * budget. So with budgetFor, a stranger's objects spend the strangers' reads,
+ * never yours. Every read, whatever its budget, is charged to the resolve's
+ * `models` too (ResolveOptions.models; 2 x MAX_MODELS when left out).
+ *
+ * Within an object, reads are reserved in placement order before anything is
+ * awaited, and a tree carried in tables is read depth first, so both are the
+ * same every time; among objects fetched separately, the order is the order
+ * their fetches answer in. A whole kit of pieces is a few dozen.
  */
 export const MAX_MODELS = 1_000
 
@@ -238,7 +251,13 @@ export interface ResolveOptions {
    * (frozen, or `left` not a writable number) is read once, as this call's
    * own: not shared, but the resolve does not throw.
    */
-  budget?: { left: number }
+  budget?: { left: number; models?: { left: number } }
+  /**
+   * The distinct objects this resolve may read, whatever budget each is
+   * charged to (MAX_MODELS), shared as `budget` is. Left out, 2 x MAX_MODELS
+   * of its own.
+   */
+  models?: { left: number }
   /**
    * Which budget a placement is charged to: given the author of the object it
    * places (the pubkey its `a` address names; null for an `e`, whose author is
@@ -287,15 +306,30 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
   // resolve does not throw.
   const given = opts.budget ?? { left: MAX_PLACED }
   const budget = usable(given) ? given : { left: Number((given as { left?: unknown } | null)?.left) || 0 }
-  // Distinct objects read so far, fetched or parsed from a table (MAX_MODELS).
-  let models = 0
+  // Distinct objects read, fetched or parsed from a table (MAX_MODELS): each
+  // charged to its placement's budget's reads and to the resolve's.
+  const overall = usable(opts.models) ? opts.models : { left: 2 * MAX_MODELS }
+  const ownReads = new Map<object, { left: number }>()
+  const readsOf = (b: { left: number; models?: unknown }): { left: number } => {
+    if (usable(b.models)) return b.models
+    let r = ownReads.get(b)
+    if (!r) { r = { left: MAX_MODELS }; ownReads.set(b, r) }
+    return r
+  }
+  /** Whether one more object may be read on `charged`'s account; if so, it is charged. */
+  const mayRead = (charged: { left: number }): boolean => {
+    const mine = readsOf(charged)
+    if (mine.left < 1 || overall.left < 1) return false
+    mine.left--
+    overall.left--
+    return true
+  }
   const fetched = new Map<string, Promise<{ model: ShardModel; table?: Record<string, unknown> } | Missing>>()
-  const load = (ref: Ref): Promise<{ model: ShardModel; table?: Record<string, unknown> } | Missing> | 'budget' => {
+  const load = (ref: Ref, charged: { left: number }): Promise<{ model: ShardModel; table?: Record<string, unknown> } | Missing> | 'objects' => {
     const key = refKey(ref)
     let got = fetched.get(key)
     if (!got) {
-      if (models >= MAX_MODELS) return 'budget'
-      models++
+      if (!mayRead(charged)) return 'objects'
       got = fetch(ref).then(
         (answer) => {
           const payload = answer instanceof Fetched ? answer.payload : answer
@@ -314,14 +348,14 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
   }
   // One parse per entry per table, however often it is placed.
   const parsed = new Map<Record<string, unknown>, Map<string, ShardModel | null>>()
-  const fromTable = (table: Record<string, unknown>, address: string): ShardModel | null | undefined | 'budget' => {
+  const fromTable = (table: Record<string, unknown>, address: string, charged: { left: number }): ShardModel | null | undefined | 'objects' => {
     let seen = parsed.get(table)
     if (!seen) { seen = new Map(); parsed.set(table, seen) }
     if (seen.has(address)) return seen.get(address)
     if (!Object.prototype.hasOwnProperty.call(table, address)) return undefined
-    if (models >= MAX_MODELS) return 'budget'
+    if (!mayRead(charged)) return 'objects'
     const got = carriedModel(table, address, read)
-    if (got !== undefined) { models++; seen.set(address, got) }
+    if (got !== undefined) seen.set(address, got)
     return got
   }
   const budgetFor = opts.budgetFor
@@ -434,16 +468,16 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
       // The table of the event the placed object travels in, for its own placements.
       let table: Record<string, unknown> | undefined
       if (ref[0] === 'a') {
-        const inRoot = fromTable(root, ref[1])
-        const found = inRoot === undefined && own ? fromTable(own, ref[1]) : inRoot
-        if (found === 'budget') return { part, ref, model: null, missing: 'budget', children: [] }
+        const inRoot = fromTable(root, ref[1], charged)
+        const found = inRoot === undefined && own ? fromTable(own, ref[1], charged) : inRoot
+        if (found === 'objects') return { part, ref, model: null, missing: 'objects', children: [] }
         got = found
         if (inRoot === undefined && own) table = own
       }
       const carried = got !== undefined
       if (got === undefined) {
-        const loading = load(ref)
-        if (loading === 'budget') return { part, ref, model: null, missing: 'budget', children: [] }
+        const loading = load(ref, charged)
+        if (loading === 'objects') return { part, ref, model: null, missing: 'objects', children: [] }
         const answer = await loading
         if (typeof answer === 'string') return { part, ref, model: null, missing: answer, children: [] }
         got = answer.model
