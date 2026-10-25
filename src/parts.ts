@@ -98,16 +98,27 @@ export function carriedTable(s: Pick<ShardModel, 'objects'>, author?: string): R
 
 /**
  * One entry of a table read as a model, checked by §1.9 on its own, with any
- * `objects` of its own ignored (a table is flat). Undefined when the table does
+ * `objects` of its own ignored (a table is flat), and with the id
+ * `a:<address>`, the reference's key, as a fetched object has. Undefined when the table does
  * not hold `address`, null when it holds a bad entry, which is a placeholder
  * for each placement naming it and is still not fetched.
  */
-export function carriedModel(table: Record<string, unknown>, address: string): ShardModel | null | undefined {
+export function carriedModel(
+  table: Record<string, unknown>,
+  address: string,
+  read: (payload: unknown, key: string) => ShardModel | null = fromPayload,
+): ShardModel | null | undefined {
   if (!Object.prototype.hasOwnProperty.call(table, address)) return undefined
   const entry = table[address]
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
+  // The entry itself when it carries no table, so a reader that keeps models by
+  // payload (`read`) finds the same one every time.
+  // Read under the reference's key, as a fetched object is, so a model has the
+  // same id whichever way it came.
+  const key = `a:${address}`
+  if (!('objects' in entry)) return read(entry, key)
   const { objects: _nested, ...flat } = entry as Record<string, unknown>
-  return fromPayload(flat, address)
+  return read(flat, key)
 }
 
 /** How resolveParts is called. */
@@ -121,6 +132,13 @@ export interface ResolveOptions {
    * every key is honoured, which is only right for a caller that checked.
    */
   author?: string
+  /**
+   * How a payload, fetched or from a table, becomes a model: `fromPayload` by
+   * default. A client that keeps one model per payload object for the whole
+   * app passes its own; it must answer as fromPayload does, null for a payload
+   * §1.9 refuses.
+   */
+  read?: (payload: unknown, key: string) => ShardModel | null
 }
 
 /**
@@ -139,6 +157,7 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
   const opts: ResolveOptions = Array.isArray(options) ? { self: options } : options ?? {}
   const self = opts.self
   const author = opts.author ?? (self && self[0] === 'a' ? pubkeyOf(self[1]) ?? undefined : undefined)
+  const read = opts.read ?? fromPayload
   const root = carriedTable(model, author)
   const fetched = new Map<string, Promise<{ model: ShardModel; table?: Record<string, unknown> } | Missing>>()
   const load = (ref: Ref) => {
@@ -147,7 +166,7 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
     if (!got) {
       got = fetch(ref).then(
         (payload) => {
-          const m = payload == null ? null : fromPayload(payload, key)
+          const m = payload == null ? null : read(payload, key)
           if (!m) return payload == null ? 'unreachable' as const : 'invalid' as const
           // The fetched object's own table, keys only under its own pubkey.
           const pk = ref[0] === 'a' ? pubkeyOf(ref[1]) : null
@@ -165,7 +184,7 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
     let seen = parsed.get(table)
     if (!seen) { seen = new Map(); parsed.set(table, seen) }
     if (seen.has(address)) return seen.get(address)
-    const got = carriedModel(table, address)
+    const got = carriedModel(table, address, read)
     if (got !== undefined) seen.set(address, got)
     return got
   }

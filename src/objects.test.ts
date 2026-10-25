@@ -23,6 +23,9 @@ const PLACE = [0, 0, 0, 0, 0, 0, 0, 0]
 const parent = (ds: string[], objects?: unknown, pk = ME): ShardModel =>
   read({ vertices: [], colors: [], refs: ds.map((d) => ref(d, pk)), parts: ds.map((_, i) => [i, 0, 0, 0, 0, 0, 0, 0]), ...(objects === undefined ? {} : { objects }) })
 
+/** A parent placing `ds`, carrying only the first. */
+const read0 = (ds: string[]): ShardModel => parent(ds, { [at(ds[0])]: payload({ name: 'carried' }) })
+
 const water = payload({ name: 'water', opacity: 40, constrain: 'off' })
 const stone = payload({ name: 'stone', constrain: 'all' })
 
@@ -166,6 +169,14 @@ describe('resolveParts with a table', () => {
     expect(placed[0].children[0].model?.name).toBe('q')
     // q travels in the root's event, so pub's table does not answer for it: r is fetched.
     expect(asked).toEqual([at('pub', THEM), at('r', THEM)])
+  })
+
+  it('reads every payload, fetched or carried, through the read it is given', async () => {
+    const seen: string[] = []
+    const read = (p: unknown, key: string): ShardModel | null => { seen.push(key); return fromPayload(p, key) }
+    const s = read0(['w', 'tile'])
+    await resolveParts(s, relayOf({ [at('tile')]: stone }).fetch, { read })
+    expect(seen.sort()).toEqual([`a:${at('tile')}`, `a:${at('w')}`].sort())
   })
 
   it('counts a carried placement toward loops', async () => {
