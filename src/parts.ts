@@ -11,9 +11,14 @@
  *
  * Anything that cannot be drawn becomes a placeholder, never a rejection of
  * the parent: another author's event is not this object's to guarantee.
+ *
+ * An object may also carry the objects it places, in `objects` (§1.10). The
+ * table of the object being drawn is looked in first, at every depth, then the
+ * table of the event the placing object travels in when it was fetched as its
+ * own; an address a table holds is never fetched, even when its entry is bad.
  */
 
-import { MAX_UNIT, PART_REACH, fromPayload, mirrorTurn, ticksOf, toRender, type Part, type Ref, type ShardModel } from './shards.js'
+import { MAX_UNIT, PART_REACH, addressesIn, fromPayload, mirrorTurn, readObjects, ticksOf, toPayload, toRender, type Part, type Ref, type ShardModel } from './shards.js'
 
 /** How many levels of placement a reader follows from the object it draws (§1.10). */
 export const MAX_PART_DEPTH = 4
@@ -38,6 +43,12 @@ export interface Placed {
   /** The placed object, or null for a placeholder. */
   model: ShardModel | null
   missing?: Missing
+  /**
+   * True when a table answered for this placement (§1.10): the object was drawn
+   * from, or its bad entry is a placeholder from, the `objects` of the object
+   * being drawn or of a fetched object above it. Absent when it was fetched.
+   */
+  carried?: true
   /** Its own placements, resolved the same way. */
   children: Placed[]
 }
@@ -67,42 +78,209 @@ export function refTags(s: Pick<ShardModel, 'refs' | 'parts'>): string[][] {
   return s.refs.filter((_, i) => used.has(i)).map((r) => r.filter((x): x is string => typeof x === 'string'))
 }
 
+/** The pubkey an address names, or null when the target is not one. */
+function pubkeyOf(target: string): string | null {
+  return parseAddress(target)?.pubkey ?? null
+}
+
 /**
- * Every placement of `model`, resolved. `self`, when the model is itself a
- * published object, counts as the first parent, so an object that places
- * itself is a loop at once. One fetch per distinct object, however many
- * times it is placed: a floor of 129 tiles fetches the tile once.
+ * The table `s` carries (§1.10), as a reader uses it: only keys under `author`,
+ * the pubkey of the event it travels in, when that is known (a key under any
+ * other pubkey is ignored and its address fetched). Never refuses: a table
+ * that is not one reads as empty. The values are unchecked payloads.
  */
-export async function resolveParts(model: ShardModel, fetch: FetchRef, self?: Ref): Promise<Placed[]> {
-  const cache = new Map<string, Promise<ShardModel | Missing>>()
-  const load = (ref: Ref): Promise<ShardModel | Missing> => {
+export function carriedTable(s: Pick<ShardModel, 'objects'>, author?: string): Record<string, unknown> {
+  const t = s.objects
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return {}
+  // Not copied: read only, and resolved once per draw.
+  return Object.fromEntries(Object.entries(t).filter(([k, v]) => v !== undefined && /^33331:[0-9a-f]{64}:/.test(k) && (!author || pubkeyOf(k) === author)))
+}
+
+/**
+ * One entry of a table read as a model, checked by §1.9 on its own, with any
+ * `objects` of its own ignored (a table is flat). Undefined when the table does
+ * not hold `address`, null when it holds a bad entry, which is a placeholder
+ * for each placement naming it and is still not fetched.
+ */
+export function carriedModel(table: Record<string, unknown>, address: string): ShardModel | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(table, address)) return undefined
+  const entry = table[address]
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
+  const { objects: _nested, ...flat } = entry as Record<string, unknown>
+  return fromPayload(flat, address)
+}
+
+/** How resolveParts is called. */
+export interface ResolveOptions {
+  /** The model as a published object: it counts as the first parent, so an object placing itself is a loop. */
+  self?: Ref
+  /**
+   * The pubkey of the event `model` travels in (or of its author, for an object
+   * not yet published), so that keys of its table under any other pubkey are
+   * ignored (§1.10). Defaults to the pubkey `self` names. When neither is known
+   * every key is honoured, which is only right for a caller that checked.
+   */
+  author?: string
+}
+
+/**
+ * Every placement of `model`, resolved. One fetch per distinct object, however
+ * many times it is placed: a floor of 129 tiles fetches the tile once.
+ *
+ * Each placement's address is looked up first in `model`'s own table, at any
+ * depth, then in the table of the event the placing object travels in when
+ * that is another one (an object fetched by its `a` address, whose keys must be
+ * under that address's pubkey; an object fetched by `e` brings no table, since
+ * its author is not known here), and only what neither holds is fetched
+ * (§1.10). The third argument may be a bare `self` reference, as it was before
+ * tables existed.
+ */
+export async function resolveParts(model: ShardModel, fetch: FetchRef, options?: Ref | ResolveOptions): Promise<Placed[]> {
+  const opts: ResolveOptions = Array.isArray(options) ? { self: options } : options ?? {}
+  const self = opts.self
+  const author = opts.author ?? (self && self[0] === 'a' ? pubkeyOf(self[1]) ?? undefined : undefined)
+  const root = carriedTable(model, author)
+  const fetched = new Map<string, Promise<{ model: ShardModel; table?: Record<string, unknown> } | Missing>>()
+  const load = (ref: Ref) => {
     const key = refKey(ref)
-    let got = cache.get(key)
+    let got = fetched.get(key)
     if (!got) {
       got = fetch(ref).then(
-        (payload) => (payload == null ? 'unreachable' : fromPayload(payload, key) ?? 'invalid'),
+        (payload) => {
+          const m = payload == null ? null : fromPayload(payload, key)
+          if (!m) return payload == null ? 'unreachable' as const : 'invalid' as const
+          // The fetched object's own table, keys only under its own pubkey.
+          const pk = ref[0] === 'a' ? pubkeyOf(ref[1]) : null
+          return pk ? { model: m, table: carriedTable(m, pk) } : { model: m }
+        },
         () => 'unreachable' as const,
       )
-      cache.set(key, got)
+      fetched.set(key, got)
     }
     return got
   }
-  const walk = async (m: ShardModel, depth: number, chain: Set<string>): Promise<Placed[]> => {
+  // One parse per entry per table, however often it is placed.
+  const parsed = new Map<Record<string, unknown>, Map<string, ShardModel | null>>()
+  const fromTable = (table: Record<string, unknown>, address: string): ShardModel | null | undefined => {
+    let seen = parsed.get(table)
+    if (!seen) { seen = new Map(); parsed.set(table, seen) }
+    if (seen.has(address)) return seen.get(address)
+    const got = carriedModel(table, address)
+    if (got !== undefined) seen.set(address, got)
+    return got
+  }
+  /** `own` is the table of the event `m` travels in, when that is not the root's. */
+  const walk = async (m: ShardModel, depth: number, chain: Set<string>, own?: Record<string, unknown>): Promise<Placed[]> => {
     const refs = m.refs ?? []
     return Promise.all((m.parts ?? []).map(async (part): Promise<Placed> => {
       const ref = refs[part.ref]
       const key = refKey(ref)
-      const miss = (missing: Missing): Placed => ({ part, ref, model: null, missing, children: [] })
-      if (chain.has(key)) return miss('cycle')
-      if (depth > MAX_PART_DEPTH) return miss('deep')
-      const got = await load(ref)
-      if (typeof got === 'string') return miss(got)
-      if (got.unit + part.step < 0 || got.unit + part.step > MAX_UNIT) return miss('scale')
-      const children = got.parts ? await walk(got, depth + 1, new Set([...chain, key])) : []
-      return { part, ref, model: got, children }
+      if (chain.has(key)) return { part, ref, model: null, missing: 'cycle', children: [] }
+      if (depth > MAX_PART_DEPTH) return { part, ref, model: null, missing: 'deep', children: [] }
+      let got: ShardModel | null | undefined
+      // The table of the event the placed object travels in, for its own placements.
+      let table: Record<string, unknown> | undefined
+      if (ref[0] === 'a') {
+        got = fromTable(root, ref[1])
+        if (got === undefined && own) { got = fromTable(own, ref[1]); table = own }
+      }
+      const carried = got !== undefined
+      if (got === undefined) {
+        const answer = await load(ref)
+        if (typeof answer === 'string') return { part, ref, model: null, missing: answer, children: [] }
+        got = answer.model
+        table = answer.table
+      }
+      const mark = carried ? { carried: true as const } : {}
+      if (got === null) return { part, ref, model: null, missing: 'invalid', ...mark, children: [] }
+      if (got.unit + part.step < 0 || got.unit + part.step > MAX_UNIT) return { part, ref, model: null, missing: 'scale', ...mark, children: [] }
+      const children = got.parts ? await walk(got, depth + 1, new Set([...chain, key]), table) : []
+      return { part, ref, model: got, ...mark, children }
     }))
   }
   return walk(model, 1, new Set(self ? [refKey(self)] : []))
+}
+
+/**
+ * The payload an object is carried as in a table: its own payload with its own
+ * `objects` taken off, because a table is flat (§1.10).
+ */
+export function carriedPayload(object: ShardModel): Record<string, unknown> {
+  const { objects: _nested, ...flat } = toPayload(object) as unknown as Record<string, unknown>
+  return flat
+}
+
+/**
+ * `root` carrying `object` under `address` (§1.10), replacing any entry there.
+ * A writer flattens: whatever `object` carries itself goes into `root`'s table
+ * too, under keys the table does not already hold (the root's table is looked
+ * in first, so an entry it holds already is the one that is drawn). `address`
+ * is not checked against `root`'s refs here; `toPayload` writes only what a
+ * placement reaches.
+ */
+export function carryObject(root: ShardModel, address: string, object: ShardModel): ShardModel {
+  const table: Record<string, unknown> = { ...(root.objects ?? {}) }
+  for (const [k, v] of Object.entries(readObjects(object.objects) ?? {})) if (!Object.prototype.hasOwnProperty.call(table, k) && k !== address) table[k] = v
+  table[address] = carriedPayload(object)
+  return { ...root, objects: Object.fromEntries(Object.entries(table)) }
+}
+
+/** `root` without the entry for `address`; the table goes when it is empty. */
+export function uncarry(root: ShardModel, address: string): ShardModel {
+  if (!root.objects || !Object.prototype.hasOwnProperty.call(root.objects, address)) return root
+  const rest = Object.entries(root.objects).filter(([k]) => k !== address)
+  const { objects: _gone, ...bare } = root
+  return rest.length ? { ...bare, objects: Object.fromEntries(rest) } : bare
+}
+
+/** What a writer's lookup says about one address: the object, and whether to carry it or only look inside it. */
+export interface CarryChoice {
+  object: ShardModel
+  /** True: carry it in the root's table. False: leave it a reference, but carry what it places where `lookup` says so. */
+  carry: boolean
+}
+
+/**
+ * `root` carrying every object `lookup` chooses, at any depth, flattened into
+ * `root`'s one table (§1.10): the writer's half of the rule a reader follows.
+ * Walks `root`'s placements and then the placements of each object `lookup`
+ * returns, no deeper than MAX_PART_DEPTH, each address once, and never into an
+ * address already among the parents. An address the table already holds is
+ * kept as it is (and walked through), so an edited copy is never replaced by
+ * the object it was copied from. `lookup` returns null for an address to leave
+ * alone, for example someone else's object. The caller checks the size.
+ *
+ * Entries of the table that the walk did not reach go, since no placement
+ * draws them and they would be carried to every reader for nothing (§1.10).
+ * An address `lookup` left alone is not walked into, so a carried object
+ * reached only through someone else's object is dropped too.
+ */
+export async function carryAll(
+  root: ShardModel,
+  lookup: (address: string) => CarryChoice | null | Promise<CarryChoice | null>,
+): Promise<ShardModel> {
+  let out = root
+  const done = new Set<string>()
+  const visit = async (m: ShardModel, depth: number, chain: Set<string>): Promise<void> => {
+    if (depth > MAX_PART_DEPTH) return
+    const used = new Set((m.parts ?? []).map((p) => p.ref))
+    for (const [i, ref] of (m.refs ?? []).entries()) {
+      if (!used.has(i) || ref[0] !== 'a' || chain.has(ref[1]) || done.has(ref[1])) continue
+      done.add(ref[1])
+      const held = out.objects ? carriedModel(out.objects, ref[1]) : undefined
+      let next: ShardModel | null = held ?? null
+      if (held === undefined) {
+        const choice = await lookup(ref[1])
+        if (!choice) continue
+        if (choice.carry) out = carryObject(out, ref[1], choice.object)
+        next = choice.object
+      }
+      if (next) await visit(next, depth + 1, new Set([...chain, ref[1]]))
+    }
+  }
+  await visit(root, 1, new Set())
+  for (const k of Object.keys(out.objects ?? {})) if (!done.has(k)) out = uncarry(out, k)
+  return out
 }
 
 /** Cosine and sine of whole degrees, exact at the quarter turns so a 90 keeps a part on the lattice. */
@@ -210,7 +388,11 @@ export function addPart(s: ShardModel, ref: Ref, place: Omit<Part, 'ref'>): { sh
   return { shard: { ...s, refs, parts }, index: parts.length - 1 }
 }
 
-/** The object without the placements at `indices`; references no placement uses any more go, and the rest renumber. */
+/**
+ * The object without the placements at `indices`; references no placement uses
+ * any more go, and the rest renumber. A carried object (§1.10) whose reference
+ * goes goes with it, unless another entry of the table still places it.
+ */
 export function removeParts(s: ShardModel, indices: Iterable<number>): ShardModel {
   const gone = new Set(indices)
   const kept = (s.parts ?? []).filter((_, i) => !gone.has(i))
@@ -219,7 +401,28 @@ export function removeParts(s: ShardModel, indices: Iterable<number>): ShardMode
   const refs = used.map((i) => (s.refs ?? [])[i])
   const parts = kept.map((p) => ({ ...p, ref: renumber.get(p.ref) as number }))
   const { refs: _r, parts: _p, ...rest } = s
-  return parts.length ? { ...rest, refs, parts } : rest
+  let out: ShardModel = parts.length ? { ...rest, refs, parts } : rest
+  const table = out.objects
+  if (table) {
+    // What the table reaches from some addresses, following its own entries.
+    const reach = (from: string[]): Set<string> => {
+      const seen = new Set<string>()
+      const queue = [...from]
+      while (queue.length) {
+        const a = queue.pop() as string
+        if (seen.has(a)) continue
+        seen.add(a)
+        if (Object.prototype.hasOwnProperty.call(table, a)) queue.push(...addressesIn(table[a]))
+      }
+      return seen
+    }
+    const addresses = (rs: Ref[]): string[] => rs.filter((r) => r[0] === 'a').map((r) => r[1])
+    const still = reach(addresses(refs))
+    // Only what the removed placements reached: an entry neither reaches may be
+    // placed beneath a fetched object, which this cannot see.
+    for (const a of reach(addresses(s.refs ?? []))) if (!still.has(a)) out = uncarry(out, a)
+  }
+  return out
 }
 
 /** An axis-aligned box in the frame renderers draw in, in the object's own model units. */

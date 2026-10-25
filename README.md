@@ -39,6 +39,21 @@ renderer multiplies by: the percent as a fraction, never below
 `OPACITY_FLOOR` (10%). A placed object uses its own, never its parent's, and an
 avatar ignores it (DECK-0003 §1.11).
 
+**Carried objects.** `ShardModel.objects` is the payload's `objects`
+(DECK-0003 §1.10): the payloads of placed objects that travel inside the
+object that places them instead of as events of their own, keyed by the
+address their `a` reference names, held exactly as they came. A table that is
+not one reads as absent, and a bad entry never refuses its parent: it is a
+placeholder for its own placements. `resolveParts` looks each placement up in
+the table of the object being drawn first, at every depth, then in the table
+of a fetched object above it, and fetches only what neither holds; pass
+`{ author }` (the pubkey of the event the object travels in) so keys under any
+other pubkey are ignored. Writers: `carryObject` adds one (flattened into the
+one table), `carryAll` carries what a lookup chooses at any depth and prunes
+what nothing reaches, `uncarry` removes one, and `removeParts` drops a carried
+object with the last placement that reaches it. `toPayload` writes the table
+flat, and omits it when empty.
+
 ## What is in it
 
 | Module | What it is |
