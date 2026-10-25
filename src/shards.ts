@@ -123,6 +123,25 @@ export interface ShardModel {
    */
   opacity?: number
   /**
+   * The objects this one carries for its placements (DECK-0003 §1.10), keyed by
+   * the address an `a` reference names, each value a payload exactly as it came
+   * (the wire's form, not a model). Absent when it carries none.
+   *
+   * Held as payloads rather than models for two reasons. Each entry is checked
+   * on its own, only when a placement draws from it (§1.9 rule 16), so a bad
+   * entry is a placeholder for its placements and never a reason to refuse this
+   * object; and an entry nobody edits is written back exactly as it was read,
+   * whatever version of the format wrote it. `carriedModel` (parts.ts) reads one
+   * entry as a model, and `carryObject` writes one.
+   */
+  objects?: Record<string, unknown>
+  /**
+   * The pubkey of the event this model was read from, when the reader knows it
+   * (parts.ts withAuthor): the only pubkey whose keys of `objects` count
+   * (DECK-0003 §1.10). Local only: never on the wire, as `paletteName`.
+   */
+  author?: string
+  /**
    * The payload's fields this library does not know, kept exactly as they came
    * so that reading an object and writing it back does not strip them. DECK-0003
    * §5 has a reader ignore what it does not recognise; carrying it through an
@@ -225,6 +244,8 @@ export interface ShardPayload {
   refs?: Ref[]
   /** Placements, eight integers each: ref index, x y z in ticks, turns about X Y Z in whole degrees, scale step. */
   parts?: number[][]
+  /** The objects this one carries for its placements, keyed by address (§1.10). Omitted when it carries none. */
+  objects?: Record<string, unknown>
 }
 
 export const MODES: ShardMode[] = ['solid', 'points', 'lines']
@@ -263,7 +284,7 @@ const NULL_REFUSED = ['ticks', 'palette', 'facecolors', 'up', 'spin', 'refs', 'p
  * SHOULD NOT write it, and carrying it would write it again on every edit.
  */
 export const PAYLOAD_FIELDS = [
-  'v', 'type', 'name', 'unit', 'extent', 'mode', 'vertices', 'ticks', 'colors', 'faces', 'facecolors', 'palette', 'up', 'spin', 'refs', 'parts', 'opacity',
+  'v', 'type', 'name', 'unit', 'extent', 'mode', 'vertices', 'ticks', 'colors', 'faces', 'facecolors', 'palette', 'up', 'spin', 'refs', 'parts', 'opacity', 'objects',
 ] as const satisfies ReadonlyArray<keyof ShardPayload | 'type'>
 /**
  * Compile-time: every field of ShardPayload is in PAYLOAD_FIELDS. A field added
@@ -295,6 +316,13 @@ const LIFTS: Record<string, (s: ShardModel, value: unknown) => ShardModel> = {
     if (readOpacity(s.opacity) !== undefined) return s
     const o = readOpacity(value)
     return o === undefined ? s : { ...s, opacity: o }
+  },
+  // 0.1.20: `objects` (DECK-0003 §1.10), read as fromPayload reads it. A table
+  // the model already holds wins, as a known field always does.
+  objects: (s, value) => {
+    if (s.objects) return s
+    const o = readObjects(value)
+    return o ? { ...s, objects: o } : s
   },
 }
 
@@ -483,6 +511,74 @@ export const PART_REACH = 64 * TICKS_PER_UNIT
 const HEX64 = /^[0-9a-f]{64}$/
 const ADDRESS = /^33331:[0-9a-f]{64}:/
 
+/**
+ * §1.10 and §1.9 rule 16: the `objects` a payload carries, or undefined for
+ * none. Never a refusal: a value that is not a JSON object, null and arrays
+ * included, reads as absent, and a key that is not an address
+ * (`33331:<64 lowercase hex>:<d>`) is dropped. The values are deep copies of
+ * whatever came, unchecked, because each one is checked on its own when a
+ * placement draws from it. Built with Object.fromEntries, as unknownFields is,
+ * so a key named `__proto__` stays data.
+ */
+export function readObjects(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const entries: Array<[string, unknown]> = []
+  for (const [k, v] of Object.entries(raw)) {
+    if (!ADDRESS.test(k) || v === undefined) continue
+    try { entries.push([k, structuredClone(v)]) } catch { /* not data: not carried */ }
+  }
+  return entries.length ? Object.fromEntries(entries) : undefined
+}
+
+
+/** A table entry as written: its own `objects` taken off, since a table is flat (§1.10). The same value when it has none. */
+function flatEntry(entry: unknown): unknown {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry) || !('objects' in entry)) return entry
+  const { objects: _nested, ...rest } = entry as Record<string, unknown>
+  return rest
+}
+
+/**
+ * The table `toPayload` writes (§1.10): every entry the model holds under an
+ * address, each with its own `objects` taken off, because a reader ignores a
+ * table inside the table and a writer flattens; its keys in order of their
+ * Unicode code points, so a table has one spelling; and nothing at all when it
+ * holds none (the canonical form, §1.2).
+ *
+ * Taking a nested table off rather than merging it up is deliberate: a reader
+ * already ignores it, so merging it would change what the object draws.
+ * `carryObject` (parts.ts) is where a writer flattens on purpose.
+ *
+ * It does not drop entries no placement reaches. The root's table answers
+ * beneath a fetched object too, so an entry may be reached only through an
+ * object this library cannot see from here; `carryAll` prunes, with the
+ * writer's own lookup, and `removeParts` drops what it alone stops reaching.
+ */
+function writtenObjects(s: Pick<ShardModel, 'objects'>): Record<string, unknown> | undefined {
+  const table = s.objects
+  if (!table || typeof table !== 'object' || Array.isArray(table)) return undefined
+  const out = Object.entries(table).filter(([k, v]) => ADDRESS.test(k) && v !== undefined).map(([k, v]): [string, unknown] => [k, flatEntry(v)])
+  out.sort(([a], [b]) => byCodePoint(a, b))
+  return out.length ? Object.fromEntries(out) : undefined
+}
+
+/** Two strings in order of their Unicode code points (not UTF-16 units, which order astral characters differently). */
+function byCodePoint(a: string, b: string): number {
+  const x = [...a], y = [...b]
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const d = (x[i].codePointAt(0) as number) - (y[i].codePointAt(0) as number)
+    if (d) return d
+  }
+  return x.length - y.length
+}
+
+/** The `a` targets a raw payload's `refs` names, read leniently: what an entry of a table may reach. */
+export function addressesIn(raw: unknown): string[] {
+  const refs = raw && typeof raw === 'object' ? (raw as { refs?: unknown }).refs : undefined
+  if (!Array.isArray(refs)) return []
+  return refs.filter((r): r is [string, string] => Array.isArray(r) && r[0] === 'a' && typeof r[1] === 'string').map((r) => r[1])
+}
+
 /** §1.9 rule 11: one `refs` entry as the wire writes it, or null. */
 function readRef(r: unknown): Ref | null {
   if (!Array.isArray(r) || r.length < 2 || r.length > 3) return null
@@ -570,6 +666,8 @@ export function toPayload(s: ShardModel): ShardPayload {
     ...(s.up ? { up: true as const, spin: wrapSpin(s.spin) } : {}),
     // §1.11: written only below 100, the canonical form, and only when valid.
     ...(readOpacity(s.opacity) !== undefined ? { opacity: s.opacity } : {}),
+    // §1.10: what this object carries for its placements, flat, in key order.
+    ...((): { objects?: Record<string, unknown> } => { const o = writtenObjects(s); return o ? { objects: o } : {} })(),
     // Fields this library does not know, written back as they were read
     // (ShardModel.extra). Last, and filtered again, so a known field is always
     // the one this library computed and can never be replaced by a stray copy.
@@ -792,6 +890,9 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
   }
   const extra = unknownFields(p)
   const opacity = readOpacity(p.opacity)
+  // §1.10: read, never a reason to refuse (rule 16); the entries are checked one
+  // at a time when a placement draws from them (parts.ts).
+  const objects = readObjects(p.objects)
   const extent = Number.isInteger(p.extent) && (p.extent as number) >= MIN_EXTENT && (p.extent as number) <= MAX_EXTENT ? (p.extent as number) : GRID_HALF
   return {
     id,
@@ -813,6 +914,7 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     ...(parts && parts.length ? { parts } : {}),
     // Carried, never read: what a newer version of the format added (§5).
     ...(opacity !== undefined ? { opacity } : {}),
+    ...(objects ? { objects } : {}),
     ...(extra ? { extra } : {}),
     updatedAt: Date.now(),
   }

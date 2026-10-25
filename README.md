@@ -39,6 +39,36 @@ renderer multiplies by: the percent as a fraction, never below
 `OPACITY_FLOOR` (10%). A placed object uses its own, never its parent's, and an
 avatar ignores it (DECK-0003 §1.11).
 
+**Carried objects.** `ShardModel.objects` is the payload's `objects`
+(DECK-0003 §1.10): the payloads of placed objects that travel inside the
+object that places them instead of as events of their own, keyed by the
+address their `a` reference names, held exactly as they came. A table that is
+not one reads as absent, and a bad entry never refuses its parent: it is a
+placeholder for its own placements.
+
+Only keys under the pubkey of the event a table travels in count, and **a
+reader that does not know that pubkey honours none**. Say whose it is with
+`withAuthor(model, pubkey)` where the model is read from its event (it sets the
+local-only `ShardModel.author`, never written, and drops every other key; for
+an unsigned item in a bag, pass the bag's signer), or with `{ author }` to
+`resolveParts`. `objectFromEvent` (the feed) does it for you.
+
+`resolveParts` looks each placement up in the table of the object being drawn
+first, at every depth, then in the table of the event the placing object came
+in (an `a` fetch: the address's pubkey; an `e` fetch: the pubkey your fetch
+returns in a `Fetched`, else none), and fetches only what neither holds. It
+draws at most `MAX_PLACED` (20,000) placements per call; the rest are
+placeholders (`missing: 'budget'`).
+
+Writers: `carryObject` adds one, flattened into the one table with only the
+writer's own keys; `carryAll` carries what a lookup chooses at any depth,
+walking an address again when it is met nearer the top (and, with `prune`,
+drops what nothing reached); `uncarry` removes one; `removeParts` drops a
+carried object with the last placement that reaches it, and keeps everything
+while any fetched placement is left, since what a fetched object places is
+looked up in the table too. `toPayload` writes the table flat, keys in code
+point order, and omits it when empty.
+
 ## What is in it
 
 | Module | What it is |

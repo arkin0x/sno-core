@@ -43,6 +43,7 @@
  */
 
 import { fromPayload, type ShardModel } from './shards.js'
+import { withAuthor } from './parts.js'
 
 /** A standalone SNO object (DECK-0003 §3.1). */
 export const SNO_KIND = 33331
@@ -256,6 +257,9 @@ export function objectFromEvent(ev: FeedEvent): FeedObject | null {
   try { shard = fromPayload(JSON.parse(ev.content), `${ev.pubkey}:${d}`) } catch { return null }
   // An object may be nothing but the arrangement of others (§1.9 rule 13).
   if (!shard || (shard.vertices.length === 0 && !shard.parts?.length)) return null
+  // What it carries counts only under its author's pubkey (DECK-0003 §1.10): a
+  // key under anyone else's would draw the publisher's shape as theirs.
+  shard = withAuthor(shard, ev.pubkey)
   return { id: ev.id, pubkey: ev.pubkey, createdAt: ev.created_at, d, address: objectAddress(ev.pubkey, d), shard, event: ev }
 }
 
