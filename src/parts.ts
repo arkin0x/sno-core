@@ -266,8 +266,9 @@ export interface CarryChoice {
  * returns, no deeper than MAX_PART_DEPTH, each address once, and never into an
  * address already among the parents. An address the table already holds is
  * kept as it is (and walked through), so an edited copy is never replaced by
- * the object it was copied from. `lookup` returns null for an address to leave
- * alone, for example someone else's object. The caller checks the size.
+ * the object it was copied from. `lookup` is given the reference as written,
+ * relay hint included, and returns null for one to leave alone, for example
+ * someone else's object or a live link. The caller checks the size.
  *
  * Entries of the table that the walk did not reach go, since no placement
  * draws them and they would be carried to every reader for nothing (§1.10).
@@ -276,7 +277,7 @@ export interface CarryChoice {
  */
 export async function carryAll(
   root: ShardModel,
-  lookup: (address: string) => CarryChoice | null | Promise<CarryChoice | null>,
+  lookup: (ref: Ref) => CarryChoice | null | Promise<CarryChoice | null>,
 ): Promise<ShardModel> {
   let out = root
   const done = new Set<string>()
@@ -289,7 +290,7 @@ export async function carryAll(
       const held = out.objects ? carriedModel(out.objects, ref[1]) : undefined
       let next: ShardModel | null = held ?? null
       if (held === undefined) {
-        const choice = await lookup(ref[1])
+        const choice = await lookup(ref)
         if (!choice) continue
         if (choice.carry) out = carryObject(out, ref[1], choice.object)
         next = choice.object

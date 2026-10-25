@@ -209,7 +209,7 @@ describe('writing a table', () => {
     const root = parent(['pub', 'room', 'tile'], undefined)
     const held = carryObject(carryObject(root, at('water'), read({ name: 'edited copy' })), at('gone'), read({ name: 'no longer placed' }))
     const asked: string[] = []
-    const out = await carryAll(held, (a) => {
+    const out = await carryAll(held, ([, a]) => {
       asked.push(a)
       const object = pieces[a]
       if (!object) return null
