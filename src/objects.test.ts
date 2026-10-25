@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Fetched, MAX_NODES, MAX_PLACED, carriedModel, carriedTable, carryAll, carryObject, parseAddress, removeParts, resolveParts, uncarry, withAuthor, type FetchRef, type Placed } from './parts.js'
+import { Fetched, MAX_MODELS, MAX_NODES, MAX_PLACED, carriedModel, carriedTable, carryAll, carryObject, parseAddress, removeParts, resolveParts, uncarry, withAuthor, type FetchRef, type Placed } from './parts.js'
 import { objectFromEvent } from './feed.js'
 import { fromPayload, liftKnown, normalizeStored, toPayload, type Ref, type ShardModel } from './shards.js'
 
@@ -429,13 +429,13 @@ describe('charging by budgetFor costs what is drawn, and has a ceiling (review o
     return { relay, root: read({ vertices: [], colors: [], refs: [ref('l0', THEM)], parts: Array.from({ length: n }, (_, j) => P(0, j)) }) }
   }
 
-  it('asks budgetFor once per object, reference and parent budget, not once per placement', async () => {
+  it('asks budgetFor once per author and parent budget, not once per placement', async () => {
     const { relay, root } = chain(3, 2_000)
     let asked = 0
     const B = { left: MAX_PLACED }
     const placed = await resolveParts(root, relayOf(relay).fetch, { author: ME, budget: B, budgetFor: (_a, parent) => { asked++; return parent } })
-    // Root, l0 and l1, one reference each: the budget is spent drawing l1's placements, so l2 is never walked.
-    expect(asked).toBe(3)
+    // Every level is by THEM under the one budget: asked once for the whole resolve.
+    expect(asked).toBe(1)
     expect(B.left).toBe(0)
     const got = count(placed)
     expect(got.drawn).toBe(MAX_PLACED)
@@ -492,6 +492,61 @@ describe('charging by budgetFor costs what is drawn, and has a ceiling (review o
       const placed = await resolveParts(root, async () => payload(), { author: ME, budgetFor: () => B })
       expect(placed.filter((p) => p.model).length).toBe(drawn)
       expect(placed.filter((p) => p.missing === 'budget').length).toBe(1)
+    }
+  })
+})
+
+describe('a resolve reads a bounded number of objects, and a budget it cannot write does not throw (0.1.23)', () => {
+  const P = (r: number, i: number): number[] => [r, i % 1000, 0, 0, 0, 0, 0, 0]
+  const tally = (xs: Placed[]): { nodes: number; drawn: number; budget: number } => {
+    let nodes = 0, drawn = 0, budget = 0
+    const w = (ys: Placed[]) => { for (const y of ys) { nodes++; if (y.model) drawn++; if (y.missing === 'budget') budget++; w(y.children) } }
+    w(xs)
+    return { nodes, drawn, budget }
+  }
+
+  it('asks budgetFor once per author and parent budget for the whole resolve, however many references name that author', async () => {
+    // One wide child placing 4,000 different objects by one stranger, under a budgetFor that mints a budget each call.
+    const N = 4_000
+    const wide = payload({ name: 'wide', vertices: [], colors: [], refs: Array.from({ length: N }, (_, i) => ref('p' + i, THEM)), parts: Array.from({ length: N }, (_, i) => P(i, i)) })
+    const root = read({ vertices: [], colors: [], refs: [ref('wide', THEM)], parts: [P(0, 0)] })
+    let asked = 0
+    const placed = await resolveParts(root, async (r) => (r[1] === at('wide', THEM) ? wide : payload()), { author: ME, budgetFor: () => { asked++; return { left: 10 } } })
+    // The root's placement of the wide child, then the child's 4,000 placements: one author under each parent.
+    expect(asked).toBe(2)
+    expect(tally(placed).drawn).toBe(1 + 10)
+  })
+
+  it('past MAX_MODELS distinct objects, a placement of one not yet read is a placeholder and is not fetched; one already read is still drawn', async () => {
+    const N = MAX_MODELS + 500
+    const root = read({ vertices: [], colors: [], refs: Array.from({ length: N }, (_, i) => ref('o' + i)), parts: [...Array.from({ length: N }, (_, i) => P(i, i)), P(0, 999)] })
+    const { fetch, asked } = relayOf(Object.fromEntries(Array.from({ length: N }, (_, i) => [at('o' + i), payload({ name: 'o' + i })])))
+    const placed = await resolveParts(root, fetch, { author: ME })
+    expect(asked.length).toBe(MAX_MODELS)
+    const got = tally(placed)
+    expect(got.drawn).toBe(MAX_MODELS + 1)
+    expect(got.budget).toBe(500)
+  })
+
+  it('carried entries parsed count toward MAX_MODELS too', async () => {
+    const N = MAX_MODELS + 200
+    const objects = Object.fromEntries(Array.from({ length: N }, (_, i) => [at('c' + i), payload({ name: 'c' + i })]))
+    const root = read({ vertices: [], colors: [], refs: Array.from({ length: N }, (_, i) => ref('c' + i)), parts: Array.from({ length: N }, (_, i) => P(i, i)), objects })
+    const { fetch, asked } = relayOf()
+    const placed = await resolveParts(root, fetch, { author: ME })
+    // A carried entry past the bound is a placeholder, not fetched instead.
+    expect(asked.length).toBe(0)
+    expect(tally(placed)).toEqual({ nodes: N, drawn: MAX_MODELS, budget: 200 })
+  })
+
+  it('a frozen budget, or one whose left is not a number, is read once and does not throw', async () => {
+    const root = read({ vertices: [], colors: [], refs: [ref('x')], parts: [P(0, 0), P(0, 1), P(0, 2)] })
+    for (const [budget, drawn] of [[Object.freeze({ left: 2 }), 2], [{ left: 'many' } as unknown as { left: number }, 0]] as const) {
+      for (const budgetFor of [undefined, (_a: string | null, p: { left: number }) => p]) {
+        const placed = await resolveParts(root, async () => payload(), { author: ME, budget, ...(budgetFor ? { budgetFor } : {}) })
+        expect(tally(placed).drawn).toBe(drawn)
+        expect(tally(placed).budget).toBe(1)
+      }
     }
   })
 })
