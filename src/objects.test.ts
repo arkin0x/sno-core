@@ -373,3 +373,42 @@ describe('the placement budget cannot be outrun', () => {
     expect(second[0].missing).toBe('budget')
   })
 })
+
+describe('charging each placement to a budget by whose object it places', () => {
+  const PLACE = (i: number): number[] => [0, i, 0, 0, 0, 0, 0, 0]
+  // Your shard places your own piece and a stranger's, each 100 times, both carried under their authors' keys
+  // (so resolvable without fetching here, through a fetch that answers both).
+  const mine = payload({ name: 'mine' }), theirs = payload({ name: 'theirs', refs: [ref('deep')], parts: [PLACE(0)] })
+  const deep = payload({ name: 'deep' })
+  const fetchBoth = relayOf({ [at('piece')]: mine, [at('obj', THEM)]: theirs, [at('deep')]: deep }).fetch
+  const root = read({ vertices: [], colors: [], refs: [ref('piece'), ref('obj', THEM)], parts: [...Array.from({ length: 100 }, (_, i) => [0, ...PLACE(i).slice(1)]), ...Array.from({ length: 100 }, (_, i) => [1, ...PLACE(i).slice(1)])] })
+  const sticky = (T: { left: number }, S: { left: number }) => (author: string | null, parent: { left: number }): { left: number } =>
+    parent === S ? S : author === ME ? T : S
+
+  it('charges a stranger\'s object, and everything under it, to the strangers\' budget, and yours to yours', async () => {
+    const T = { left: 1_000 }, S = { left: 1_000 }
+    const placed = await resolveParts(root, fetchBoth, { author: ME, budget: T, budgetFor: sticky(T, S) })
+    expect(placed.filter((p) => p.model).length).toBe(200)
+    // Yours: 100. The stranger's: 100, and the piece of yours under each of them stays the strangers': 100 more.
+    expect(T.left).toBe(900)
+    expect(S.left).toBe(800)
+  })
+
+  it('a spent budget cuts only what is charged to it, with one placeholder per budget an object runs out of', async () => {
+    const T = { left: 1_000 }, S = { left: 10 }
+    const placed = await resolveParts(root, fetchBoth, { author: ME, budget: T, budgetFor: sticky(T, S) })
+    const top = placed.filter((p) => p.model)
+    // All 100 of yours; 10 of the stranger's, each of whose own child then finds S spent.
+    expect(top.filter((p) => p.model?.name === 'mine').length).toBe(100)
+    expect(top.filter((p) => p.model?.name === 'theirs').length).toBe(10)
+    expect(placed.filter((p) => p.missing === 'budget').length).toBe(1)
+    expect(T.left).toBe(900)
+  })
+
+  it('left out, every placement is charged to the one budget, as before', async () => {
+    const T = { left: 1_000 }
+    await resolveParts(root, fetchBoth, { author: ME, budget: T })
+    expect(T.left).toBe(1_000 - 300)
+  })
+})
+

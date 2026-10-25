@@ -209,6 +209,18 @@ export interface ResolveOptions {
    * Left out, each call has MAX_PLACED of its own.
    */
   budget?: { left: number }
+  /**
+   * Which budget a placement is charged to: given the author of the object it
+   * places (the pubkey its `a` address names; null for an `e`, whose author is
+   * not known until it is fetched) and the budget its parent placement was
+   * charged to (`budget` for the object being drawn), the budget to charge.
+   * Left out, every placement is charged to `budget`. A client that spends one
+   * share on its own objects and another on strangers' passes this, so a
+   * trusted object placing a stranger's charges that child, and all under it,
+   * to the strangers' share (lib/trust.ts in ONOSENDAI keeps it a stranger's
+   * from there down, so a stranger cannot reach your share by placing yours).
+   */
+  budgetFor?: (author: string | null, parent: { left: number }) => { left: number }
 }
 
 /**
@@ -262,20 +274,28 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
     if (got !== undefined) seen.set(address, got)
     return got
   }
-  /** `own` is the table of the event `m` travels in, when that is not the root's. */
-  const walk = async (m: ShardModel, depth: number, chain: Set<string>, own?: Record<string, unknown>): Promise<Placed[]> => {
+  /** `own` is the table of the event `m` travels in, when that is not the root's; `paid` is the budget `m`'s own placement was charged to. */
+  const walk = async (m: ShardModel, depth: number, chain: Set<string>, own: Record<string, unknown> | undefined, paid: { left: number }): Promise<Placed[]> => {
     const refs = m.refs ?? []
     const all = m.parts ?? []
-    // Every placement counts toward the budget, a placeholder too, before
+    // Every placement counts toward a budget, a placeholder too, before
     // anything else is decided: a loop or a level past the depth bound is
     // drawn, so it is paid for. Counted here, synchronously, for the whole
     // level at once, so nothing below can start before its share is taken.
-    // Once the budget is spent, the rest of this object's placements are one
+    // Each to the budget budgetFor names (or `paid`), and once a budget is
+    // spent, what is left of this object's placements on it is one
     // placeholder, not one each: a reader never maps more than it draws.
-    const taken = all.slice(0, Math.max(0, budget.left))
-    budget.left -= taken.length
+    const taken: Array<{ part: Part; charged: { left: number } }> = []
+    const cut = new Map<{ left: number }, Part>()
+    for (const part of all) {
+      const ref = refs[part.ref]
+      const author = ref && ref[0] === 'a' ? pubkeyOf(ref[1]) : null
+      const charged = opts.budgetFor ? opts.budgetFor(author, paid) : paid
+      if (charged.left > 0) { charged.left--; taken.push({ part, charged }) }
+      else if (!cut.has(charged)) cut.set(charged, part)
+    }
     const over = (part: Part): Placed => ({ part, ref: refs[part.ref], model: null, missing: 'budget', children: [] })
-    const drawn = await Promise.all(taken.map(async (part): Promise<Placed> => {
+    const drawn = await Promise.all(taken.map(async ({ part, charged }): Promise<Placed> => {
       const ref = refs[part.ref]
       const key = refKey(ref)
       if (chain.has(key)) return { part, ref, model: null, missing: 'cycle', children: [] }
@@ -297,12 +317,12 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
       const mark = carried ? { carried: true as const } : {}
       if (got === null) return { part, ref, model: null, missing: 'invalid', ...mark, children: [] }
       if (got.unit + part.step < 0 || got.unit + part.step > MAX_UNIT) return { part, ref, model: null, missing: 'scale', ...mark, children: [] }
-      const children = got.parts ? await walk(got, depth + 1, new Set([...chain, key]), table) : []
+      const children = got.parts ? await walk(got, depth + 1, new Set([...chain, key]), table, charged) : []
       return { part, ref, model: got, ...mark, children }
     }))
-    return taken.length < all.length ? [...drawn, over(all[taken.length])] : drawn
+    return cut.size ? [...drawn, ...[...cut.values()].map(over)] : drawn
   }
-  return walk(model, 1, new Set(self ? [refKey(self)] : []))
+  return walk(model, 1, new Set(self ? [refKey(self)] : []), undefined, budget)
 }
 
 /**
