@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Fetched, MAX_NODES, MAX_PLACED, carriedModel, carriedTable, carryAll, carryObject, parseAddress, removeParts, resolveParts, uncarry, withAuthor, type FetchRef, type Placed } from './parts.js'
+import { Fetched, MAX_MODELS, MAX_NODES, MAX_PLACED, carriedModel, carriedTable, carryAll, carryObject, parseAddress, removeParts, resolveParts, uncarry, withAuthor, type FetchRef, type Placed } from './parts.js'
 import { objectFromEvent } from './feed.js'
 import { fromPayload, liftKnown, normalizeStored, toPayload, type Ref, type ShardModel } from './shards.js'
 
@@ -429,13 +429,13 @@ describe('charging by budgetFor costs what is drawn, and has a ceiling (review o
     return { relay, root: read({ vertices: [], colors: [], refs: [ref('l0', THEM)], parts: Array.from({ length: n }, (_, j) => P(0, j)) }) }
   }
 
-  it('asks budgetFor once per object, reference and parent budget, not once per placement', async () => {
+  it('asks budgetFor once per author and parent budget, not once per placement', async () => {
     const { relay, root } = chain(3, 2_000)
     let asked = 0
     const B = { left: MAX_PLACED }
     const placed = await resolveParts(root, relayOf(relay).fetch, { author: ME, budget: B, budgetFor: (_a, parent) => { asked++; return parent } })
-    // Root, l0 and l1, one reference each: the budget is spent drawing l1's placements, so l2 is never walked.
-    expect(asked).toBe(3)
+    // Every level is by THEM under the one budget: asked once for the whole resolve.
+    expect(asked).toBe(1)
     expect(B.left).toBe(0)
     const got = count(placed)
     expect(got.drawn).toBe(MAX_PLACED)
@@ -493,5 +493,98 @@ describe('charging by budgetFor costs what is drawn, and has a ceiling (review o
       expect(placed.filter((p) => p.model).length).toBe(drawn)
       expect(placed.filter((p) => p.missing === 'budget').length).toBe(1)
     }
+  })
+})
+
+describe('a resolve reads a bounded number of objects, and a budget it cannot write does not throw (0.1.23)', () => {
+  const P = (r: number, i: number): number[] => [r, i % 1000, 0, 0, 0, 0, 0, 0]
+  const tally = (xs: Placed[]): { nodes: number; drawn: number; budget: number; objects: number } => {
+    let nodes = 0, drawn = 0, budget = 0, objects = 0
+    const w = (ys: Placed[]) => { for (const y of ys) { nodes++; if (y.model) drawn++; if (y.missing === 'budget') budget++; if (y.missing === 'objects') objects++; w(y.children) } }
+    w(xs)
+    return { nodes, drawn, budget, objects }
+  }
+
+  it('asks budgetFor once per author and parent budget for the whole resolve, however many references name that author', async () => {
+    // One wide child placing 4,000 different objects by one stranger, under a budgetFor that mints a budget each call.
+    const N = 4_000
+    const wide = payload({ name: 'wide', vertices: [], colors: [], refs: Array.from({ length: N }, (_, i) => ref('p' + i, THEM)), parts: Array.from({ length: N }, (_, i) => P(i, i)) })
+    const root = read({ vertices: [], colors: [], refs: [ref('wide', THEM)], parts: [P(0, 0)] })
+    let asked = 0
+    const placed = await resolveParts(root, async (r) => (r[1] === at('wide', THEM) ? wide : payload()), { author: ME, budgetFor: () => { asked++; return { left: 10 } } })
+    // The root's placement of the wide child, then the child's 4,000 placements: one author under each parent.
+    expect(asked).toBe(2)
+    expect(tally(placed).drawn).toBe(1 + 10)
+  })
+
+  it("past MAX_MODELS distinct objects, a placement of one not yet read is an 'objects' placeholder and is not fetched; one already read is still drawn", async () => {
+    const N = MAX_MODELS + 500
+    const root = read({ vertices: [], colors: [], refs: Array.from({ length: N }, (_, i) => ref('o' + i)), parts: [...Array.from({ length: N }, (_, i) => P(i, i)), P(0, 999)] })
+    const { fetch, asked } = relayOf(Object.fromEntries(Array.from({ length: N }, (_, i) => [at('o' + i), payload({ name: 'o' + i })])))
+    const placed = await resolveParts(root, fetch, { author: ME })
+    expect(asked.length).toBe(MAX_MODELS)
+    const got = tally(placed)
+    expect(got.drawn).toBe(MAX_MODELS + 1)
+    expect(got.objects).toBe(500)
+    expect(got.budget).toBe(0)
+    // Reserved in placement order: the last 500 are the ones cut, every time.
+    expect(placed.slice(0, N).findIndex((p) => p.missing === 'objects')).toBe(MAX_MODELS)
+  })
+
+  it('carried entries parsed count toward MAX_MODELS too', async () => {
+    const N = MAX_MODELS + 200
+    const objects = Object.fromEntries(Array.from({ length: N }, (_, i) => [at('c' + i), payload({ name: 'c' + i })]))
+    const root = read({ vertices: [], colors: [], refs: Array.from({ length: N }, (_, i) => ref('c' + i)), parts: Array.from({ length: N }, (_, i) => P(i, i)), objects })
+    const { fetch, asked } = relayOf()
+    const placed = await resolveParts(root, fetch, { author: ME })
+    // A carried entry past the bound is a placeholder, not fetched instead.
+    expect(asked.length).toBe(0)
+    expect(tally(placed)).toEqual({ nodes: N, drawn: MAX_MODELS, budget: 0, objects: 200 })
+  })
+
+  it('a frozen budget, or one whose left is not a number, is read once and does not throw', async () => {
+    const root = read({ vertices: [], colors: [], refs: [ref('x')], parts: [P(0, 0), P(0, 1), P(0, 2)] })
+    for (const [budget, drawn] of [[Object.freeze({ left: 2 }), 2], [{ left: 'many' } as unknown as { left: number }, 0]] as const) {
+      for (const budgetFor of [undefined, (_a: string | null, p: { left: number }) => p]) {
+        const placed = await resolveParts(root, async () => payload(), { author: ME, budget, ...(budgetFor ? { budgetFor } : {}) })
+        expect(tally(placed).drawn).toBe(drawn)
+        expect(tally(placed).budget).toBe(1)
+      }
+    }
+  })
+
+  it("with budgetFor, a stranger's objects spend the strangers' reads, never yours", async () => {
+    // Your build: a stranger's junk placing 1,000 addresses that do not exist, then 200 of your rooms of 3 props each (800 objects).
+    const relay: Record<string, unknown> = {}
+    for (let i = 0; i < 200; i++) {
+      relay[at('room' + i)] = payload({ name: 'room' + i, vertices: [], colors: [], refs: [0, 1, 2].map((k) => ref(`prop${i}_${k}`)), parts: [0, 1, 2].map((k) => P(k, k)) })
+      for (const k of [0, 1, 2]) relay[at(`prop${i}_${k}`)] = payload({ name: 'prop' })
+    }
+    relay[at('junk', THEM)] = payload({ name: 'junk', vertices: [], colors: [], refs: Array.from({ length: 1_000 }, (_, i) => ref('nothing' + i, THEM)), parts: Array.from({ length: 1_000 }, (_, i) => P(i, i)) })
+    const root = read({ vertices: [], colors: [], refs: [ref('junk', THEM), ...Array.from({ length: 200 }, (_, i) => ref('room' + i))], parts: Array.from({ length: 201 }, (_, i) => P(i, i)) })
+    const T = { left: 20_000 }, S = { left: 4_000 }
+    const budgetFor = (author: string | null, parent: { left: number }) => (parent === S ? S : author === ME ? T : S)
+    // The junk answers at once, your rooms later: it would take every read first if reads were one pool.
+    const fetch: FetchRef = async (r) => { await new Promise((ok) => setTimeout(ok, r[1].includes(':junk') ? 0 : 5)); return relay[r[1]] ?? null }
+    const placed = await resolveParts(root, fetch, { author: ME, budget: T, budgetFor })
+    const rooms = placed.slice(1)
+    expect(rooms.filter((p) => p.model).length).toBe(200)
+    expect(rooms.reduce((n, p) => n + p.children.filter((c) => c.model).length, 0)).toBe(600)
+    // The strangers' reads: the junk itself and 999 of its addresses; its last placement is cut.
+    expect(placed[0].children.filter((c) => c.missing === 'objects').length).toBe(1)
+  })
+
+  it("a budget's own models is shared as the budget is, and so is the resolve's", async () => {
+    const root = read({ vertices: [], colors: [], refs: Array.from({ length: 4 }, (_, i) => ref('o' + i)), parts: Array.from({ length: 4 }, (_, i) => P(i, i)) })
+    const relay = relayOf(Object.fromEntries(Array.from({ length: 4 }, (_, i) => [at('o' + i), payload()])))
+    const shared = { left: MAX_PLACED, models: { left: 5 } }
+    await resolveParts(root, relay.fetch, { author: ME, budget: shared })
+    const second = await resolveParts(root, relay.fetch, { author: ME, budget: shared })
+    expect(shared.models.left).toBe(0)
+    expect(tally(second)).toMatchObject({ drawn: 1, objects: 3 })
+    const overall = { left: 2 }
+    const third = await resolveParts(root, relay.fetch, { author: ME, models: overall })
+    expect(overall.left).toBe(0)
+    expect(tally(third)).toMatchObject({ drawn: 2, objects: 2 })
   })
 })
