@@ -215,7 +215,10 @@ describe('writing a table', () => {
       if (!object) return null
       return { object, carry: a !== at('pub') }
     })
-    expect(Object.keys(out.objects ?? {}).sort()).toEqual([at('room'), at('under'), at('water')].sort())
+    // Without `prune`, an entry nothing reached stays; with it, it goes.
+    expect(Object.keys(out.objects ?? {}).sort()).toEqual([at('gone'), at('room'), at('under'), at('water')].sort())
+    const pruned = await carryAll(held, ([, a]) => (pieces[a] ? { object: pieces[a], carry: a !== at('pub') } : null), { prune: true })
+    expect(Object.keys(pruned.objects ?? {}).sort()).toEqual([at('room'), at('under'), at('water')].sort())
     expect(carriedModel(out.objects ?? {}, at('water'))?.name).toBe('edited copy')
     expect(asked).not.toContain(at('water'))
     // And it reads back: what is written is what a reader draws.

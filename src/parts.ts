@@ -270,14 +270,17 @@ export interface CarryChoice {
  * relay hint included, and returns null for one to leave alone, for example
  * someone else's object or a live link. The caller checks the size.
  *
- * Entries of the table that the walk did not reach go, since no placement
- * draws them and they would be carried to every reader for nothing (§1.10).
- * An address `lookup` left alone is not walked into, so a carried object
- * reached only through someone else's object is dropped too.
+ * With `prune`, entries of the table that the walk did not reach go, since no
+ * placement draws them and they would be carried to every reader for nothing
+ * (§1.10). A reference `lookup` left alone is not walked into, so an entry
+ * reached only through one is dropped too, which is why pruning is asked for
+ * rather than done: a table another client wrote may carry objects placed
+ * beneath a reference this writer does not walk.
  */
 export async function carryAll(
   root: ShardModel,
   lookup: (ref: Ref) => CarryChoice | null | Promise<CarryChoice | null>,
+  options: { prune?: boolean } = {},
 ): Promise<ShardModel> {
   let out = root
   const done = new Set<string>()
@@ -299,7 +302,7 @@ export async function carryAll(
     }
   }
   await visit(root, 1, new Set())
-  for (const k of Object.keys(out.objects ?? {})) if (!done.has(k)) out = uncarry(out, k)
+  if (options.prune) for (const k of Object.keys(out.objects ?? {})) if (!done.has(k)) out = uncarry(out, k)
   return out
 }
 
