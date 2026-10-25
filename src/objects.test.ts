@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Fetched, MAX_PLACED, carriedModel, carriedTable, carryAll, carryObject, parseAddress, removeParts, resolveParts, uncarry, withAuthor, type FetchRef } from './parts.js'
+import { Fetched, MAX_PLACED, carriedModel, carriedTable, carryAll, carryObject, parseAddress, removeParts, resolveParts, uncarry, withAuthor, type FetchRef, type Placed } from './parts.js'
 import { objectFromEvent } from './feed.js'
 import { fromPayload, liftKnown, normalizeStored, toPayload, type Ref, type ShardModel } from './shards.js'
 
@@ -330,5 +330,46 @@ describe('the review of #21', () => {
     carriedModel(table, at('w'), reader)
     expect(seen[0]).toBe(seen[1])
     expect(seen[0]).not.toHaveProperty('objects')
+  })
+})
+
+describe('the placement budget cannot be outrun', () => {
+  // The reviewer's shapes: four levels each placing the next N times, then a
+  // fifth level (deep placeholders) or a loop back up (cycle placeholders).
+  const level = (name: string, next: string | null, n: number): Record<string, unknown> =>
+    payload({ name, vertices: [], colors: [], ...(next ? { refs: [ref(next)], parts: Array.from({ length: n }, (_, i) => [0, i, 0, 0, 0, 0, 0, 0]) } : {}) })
+  const build = (last: string | null, n: number): ShardModel => ({
+    ...(fromPayload(level('root', 'b', n), 'r') as ShardModel),
+    objects: { [at('b')]: level('b', 'c', n), [at('c')]: level('c', 'd', n), [at('d')]: level('d', 'e', n), [at('e')]: level('e', last, n) },
+  })
+  const nodes = (xs: Placed[]): number => xs.reduce((n, x) => n + 1 + nodes(x.children), 0)
+
+  for (const [shape, last] of [['a fifth level, all deep', 'f'], ['a loop back up, all cycles', 'd'], ['four levels', null]] as const) {
+    it(`bounds ${shape}`, async () => {
+      const placed = await resolveParts(build(last, 40), relayOf().fetch, { author: ME })
+      // At most the budget, plus one marker per object cut short (never more objects than counted).
+      expect(nodes(placed)).toBeLessThanOrEqual(2 * MAX_PLACED)
+    })
+  }
+
+  it('counts placeholders too: a level past the depth bound is paid for', async () => {
+    const placed = await resolveParts(build('f', 12), relayOf().fetch, { author: ME })
+    const tally: Record<string, number> = {}
+    const walk = (xs: Placed[]): void => { for (const x of xs) { tally[x.missing ?? 'drawn'] = (tally[x.missing ?? 'drawn'] ?? 0) + 1; walk(x.children) } }
+    walk(placed)
+    // 12 + 144 + 1728 + 20736 counted would pass the budget before the deep level is reached.
+    expect(tally.budget).toBeGreaterThan(0)
+    expect((tally.drawn ?? 0) + (tally.deep ?? 0)).toBeLessThanOrEqual(MAX_PLACED)
+  })
+
+  it('shares one budget between resolves that are handed the same one', async () => {
+    const budget = { left: 1000 }
+    const first = await resolveParts(build(null, 12), relayOf().fetch, { author: ME, budget })
+    const second = await resolveParts(build(null, 12), relayOf().fetch, { author: ME, budget })
+    const drawn = (xs: Placed[]): number => xs.reduce((n, x) => n + (x.model ? 1 : 0) + drawn(x.children), 0)
+    expect(drawn(first) + drawn(second)).toBeLessThanOrEqual(1000)
+    expect(budget.left).toBe(0)
+    expect(second.length).toBe(1)
+    expect(second[0].missing).toBe('budget')
   })
 })

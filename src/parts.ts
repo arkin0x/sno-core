@@ -41,8 +41,10 @@ export type Missing =
   | 'budget'
 
 /**
- * The most placements one resolve draws, at every depth together; the rest are
- * placeholders. Four levels of a few dozen placements each multiply fast: a
+ * The most placements one resolve draws, at every depth together, placeholders
+ * for loops and for levels past the depth bound included; past it, what is
+ * left of each object's placements is one placeholder ('budget'), so a resolve
+ * returns at most this many placements plus one marker per object cut short. Four levels of a few dozen placements each multiply fast: a
  * 3.4 KB table was measured placing 838,000 objects (204 MB before a single
  * mesh). A reader MAY bound its own work this way (DECK-0003 §1.10, §6).
  */
@@ -133,6 +135,11 @@ export function carriedTable(s: Pick<ShardModel, 'objects'>, author: string | nu
  * draw after this takes the table as it is (§1.10). For a signed event that is
  * its pubkey; for an unsigned item in a bag, the bag's signer, never the
  * item's own claim. The same model when nothing changes.
+ *
+ * Never pass the local user's pubkey for a payload that was not read from an
+ * event that user signed (text pasted, a file, an import): anyone can write
+ * keys under anyone's name, so such a payload's table is trusted for no one;
+ * pass null.
  */
 export function withAuthor(model: ShardModel, pubkey: string | null): ShardModel {
   const kept = model.objects ? carriedTable(model, pubkey) : null
@@ -195,6 +202,13 @@ export interface ResolveOptions {
    * §1.9 refuses.
    */
   read?: (payload: unknown, key: string) => ShardModel | null
+  /**
+   * The placements this resolve may still draw, shared: pass one object to
+   * several resolves and they draw MAX_PLACED, or whatever `left` starts at,
+   * between them (a client resolving every shard around a walker at once).
+   * Left out, each call has MAX_PLACED of its own.
+   */
+  budget?: { left: number }
 }
 
 /**
@@ -216,7 +230,7 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
   const author = opts.author !== undefined ? opts.author : model.author ?? (self && self[0] === 'a' ? pubkeyOf(self[1]) : null)
   const read = opts.read ?? fromPayload
   const root = carriedTable(model, author)
-  let placedCount = 0
+  const budget = opts.budget ?? { left: MAX_PLACED }
   const fetched = new Map<string, Promise<{ model: ShardModel; table?: Record<string, unknown> } | Missing>>()
   const load = (ref: Ref) => {
     const key = refKey(ref)
@@ -251,12 +265,21 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
   /** `own` is the table of the event `m` travels in, when that is not the root's. */
   const walk = async (m: ShardModel, depth: number, chain: Set<string>, own?: Record<string, unknown>): Promise<Placed[]> => {
     const refs = m.refs ?? []
-    return Promise.all((m.parts ?? []).map(async (part): Promise<Placed> => {
+    const all = m.parts ?? []
+    // Every placement counts toward the budget, a placeholder too, before
+    // anything else is decided: a loop or a level past the depth bound is
+    // drawn, so it is paid for. Counted here, synchronously, for the whole
+    // level at once, so nothing below can start before its share is taken.
+    // Once the budget is spent, the rest of this object's placements are one
+    // placeholder, not one each: a reader never maps more than it draws.
+    const taken = all.slice(0, Math.max(0, budget.left))
+    budget.left -= taken.length
+    const over = (part: Part): Placed => ({ part, ref: refs[part.ref], model: null, missing: 'budget', children: [] })
+    const drawn = await Promise.all(taken.map(async (part): Promise<Placed> => {
       const ref = refs[part.ref]
       const key = refKey(ref)
       if (chain.has(key)) return { part, ref, model: null, missing: 'cycle', children: [] }
       if (depth > MAX_PART_DEPTH) return { part, ref, model: null, missing: 'deep', children: [] }
-      if (++placedCount > MAX_PLACED) return { part, ref, model: null, missing: 'budget', children: [] }
       let got: ShardModel | null | undefined
       // The table of the event the placed object travels in, for its own placements.
       let table: Record<string, unknown> | undefined
@@ -277,6 +300,7 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
       const children = got.parts ? await walk(got, depth + 1, new Set([...chain, key]), table) : []
       return { part, ref, model: got, ...mark, children }
     }))
+    return taken.length < all.length ? [...drawn, over(all[taken.length])] : drawn
   }
   return walk(model, 1, new Set(self ? [refKey(self)] : []))
 }
