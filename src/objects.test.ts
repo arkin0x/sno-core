@@ -209,7 +209,7 @@ describe('writing a table', () => {
     const root = parent(['pub', 'room', 'tile'], undefined)
     const held = carryObject(carryObject(root, at('water'), read({ name: 'edited copy' })), at('gone'), read({ name: 'no longer placed' }))
     const asked: string[] = []
-    const out = await carryAll(held, ([, a]) => {
+    const out = carryAll(held, ([, a]) => {
       asked.push(a)
       const object = pieces[a]
       if (!object) return null
@@ -217,7 +217,7 @@ describe('writing a table', () => {
     })
     // Without `prune`, an entry nothing reached stays; with it, it goes.
     expect(Object.keys(out.objects ?? {}).sort()).toEqual([at('gone'), at('room'), at('under'), at('water')].sort())
-    const pruned = await carryAll(held, ([, a]) => (pieces[a] ? { object: pieces[a], carry: a !== at('pub') } : null), { prune: true })
+    const pruned = carryAll(held, ([, a]) => (pieces[a] ? { object: pieces[a], carry: a !== at('pub') } : null), { prune: true })
     expect(Object.keys(pruned.objects ?? {}).sort()).toEqual([at('room'), at('under'), at('water')].sort())
     expect(carriedModel(out.objects ?? {}, at('water'))?.name).toBe('edited copy')
     expect(asked).not.toContain(at('water'))

@@ -269,6 +269,8 @@ export interface CarryChoice {
  * the object it was copied from. `lookup` is given the reference as written,
  * relay hint included, and returns null for one to leave alone, for example
  * someone else's object or a live link. The caller checks the size.
+ * Synchronous, so a writer can carry and check the size before anything else
+ * in its flow yields: a lookup answers from what is in hand.
  *
  * With `prune`, entries of the table that the walk did not reach go, since no
  * placement draws them and they would be carried to every reader for nothing
@@ -277,14 +279,14 @@ export interface CarryChoice {
  * rather than done: a table another client wrote may carry objects placed
  * beneath a reference this writer does not walk.
  */
-export async function carryAll(
+export function carryAll(
   root: ShardModel,
-  lookup: (ref: Ref) => CarryChoice | null | Promise<CarryChoice | null>,
+  lookup: (ref: Ref) => CarryChoice | null,
   options: { prune?: boolean } = {},
-): Promise<ShardModel> {
+): ShardModel {
   let out = root
   const done = new Set<string>()
-  const visit = async (m: ShardModel, depth: number, chain: Set<string>): Promise<void> => {
+  const visit = (m: ShardModel, depth: number, chain: Set<string>): void => {
     if (depth > MAX_PART_DEPTH) return
     const used = new Set((m.parts ?? []).map((p) => p.ref))
     for (const [i, ref] of (m.refs ?? []).entries()) {
@@ -293,15 +295,15 @@ export async function carryAll(
       const held = out.objects ? carriedModel(out.objects, ref[1]) : undefined
       let next: ShardModel | null = held ?? null
       if (held === undefined) {
-        const choice = await lookup(ref)
+        const choice = lookup(ref)
         if (!choice) continue
         if (choice.carry) out = carryObject(out, ref[1], choice.object)
         next = choice.object
       }
-      if (next) await visit(next, depth + 1, new Set([...chain, ref[1]]))
+      if (next) visit(next, depth + 1, new Set([...chain, ref[1]]))
     }
   }
-  await visit(root, 1, new Set())
+  visit(root, 1, new Set())
   if (options.prune) for (const k of Object.keys(out.objects ?? {})) if (!done.has(k)) out = uncarry(out, k)
   return out
 }
