@@ -361,5 +361,15 @@ describe('the placement budget cannot be outrun', () => {
     expect(tally.budget).toBeGreaterThan(0)
     expect((tally.drawn ?? 0) + (tally.deep ?? 0)).toBeLessThanOrEqual(MAX_PLACED)
   })
-})
 
+  it('shares one budget between resolves that are handed the same one', async () => {
+    const budget = { left: 1000 }
+    const first = await resolveParts(build(null, 12), relayOf().fetch, { author: ME, budget })
+    const second = await resolveParts(build(null, 12), relayOf().fetch, { author: ME, budget })
+    const drawn = (xs: Placed[]): number => xs.reduce((n, x) => n + (x.model ? 1 : 0) + drawn(x.children), 0)
+    expect(drawn(first) + drawn(second)).toBeLessThanOrEqual(1000)
+    expect(budget.left).toBe(0)
+    expect(second.length).toBe(1)
+    expect(second[0].missing).toBe('budget')
+  })
+})

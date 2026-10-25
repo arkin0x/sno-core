@@ -202,6 +202,13 @@ export interface ResolveOptions {
    * §1.9 refuses.
    */
   read?: (payload: unknown, key: string) => ShardModel | null
+  /**
+   * The placements this resolve may still draw, shared: pass one object to
+   * several resolves and they draw MAX_PLACED, or whatever `left` starts at,
+   * between them (a client resolving every shard around a walker at once).
+   * Left out, each call has MAX_PLACED of its own.
+   */
+  budget?: { left: number }
 }
 
 /**
@@ -223,7 +230,7 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
   const author = opts.author !== undefined ? opts.author : model.author ?? (self && self[0] === 'a' ? pubkeyOf(self[1]) : null)
   const read = opts.read ?? fromPayload
   const root = carriedTable(model, author)
-  let placedCount = 0
+  const budget = opts.budget ?? { left: MAX_PLACED }
   const fetched = new Map<string, Promise<{ model: ShardModel; table?: Record<string, unknown> } | Missing>>()
   const load = (ref: Ref) => {
     const key = refKey(ref)
@@ -265,9 +272,8 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
     // level at once, so nothing below can start before its share is taken.
     // Once the budget is spent, the rest of this object's placements are one
     // placeholder, not one each: a reader never maps more than it draws.
-    const left = Math.max(0, MAX_PLACED - placedCount)
-    const taken = all.slice(0, left)
-    placedCount += taken.length
+    const taken = all.slice(0, Math.max(0, budget.left))
+    budget.left -= taken.length
     const over = (part: Part): Placed => ({ part, ref: refs[part.ref], model: null, missing: 'budget', children: [] })
     const drawn = await Promise.all(taken.map(async (part): Promise<Placed> => {
       const ref = refs[part.ref]
