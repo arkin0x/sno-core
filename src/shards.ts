@@ -136,6 +136,12 @@ export interface ShardModel {
    */
   objects?: Record<string, unknown>
   /**
+   * The pubkey of the event this model was read from, when the reader knows it
+   * (parts.ts withAuthor): the only pubkey whose keys of `objects` count
+   * (DECK-0003 §1.10). Local only: never on the wire, as `paletteName`.
+   */
+  author?: string
+  /**
    * The payload's fields this library does not know, kept exactly as they came
    * so that reading an object and writing it back does not strip them. DECK-0003
    * §5 has a reader ignore what it does not recognise; carrying it through an
@@ -535,7 +541,8 @@ function flatEntry(entry: unknown): unknown {
 /**
  * The table `toPayload` writes (§1.10): every entry the model holds under an
  * address, each with its own `objects` taken off, because a reader ignores a
- * table inside the table and a writer flattens; and nothing at all when it
+ * table inside the table and a writer flattens; its keys in order of their
+ * Unicode code points, so a table has one spelling; and nothing at all when it
  * holds none (the canonical form, §1.2).
  *
  * Taking a nested table off rather than merging it up is deliberate: a reader
@@ -547,11 +554,22 @@ function flatEntry(entry: unknown): unknown {
  * object this library cannot see from here; `carryAll` prunes, with the
  * writer's own lookup, and `removeParts` drops what it alone stops reaching.
  */
-export function writtenObjects(s: Pick<ShardModel, 'objects'>): Record<string, unknown> | undefined {
+function writtenObjects(s: Pick<ShardModel, 'objects'>): Record<string, unknown> | undefined {
   const table = s.objects
   if (!table || typeof table !== 'object' || Array.isArray(table)) return undefined
   const out = Object.entries(table).filter(([k, v]) => ADDRESS.test(k) && v !== undefined).map(([k, v]): [string, unknown] => [k, flatEntry(v)])
+  out.sort(([a], [b]) => byCodePoint(a, b))
   return out.length ? Object.fromEntries(out) : undefined
+}
+
+/** Two strings in order of their Unicode code points (not UTF-16 units, which order astral characters differently). */
+function byCodePoint(a: string, b: string): number {
+  const x = [...a], y = [...b]
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const d = (x[i].codePointAt(0) as number) - (y[i].codePointAt(0) as number)
+    if (d) return d
+  }
+  return x.length - y.length
 }
 
 /** The `a` targets a raw payload's `refs` names, read leniently: what an entry of a table may reach. */
@@ -648,7 +666,7 @@ export function toPayload(s: ShardModel): ShardPayload {
     ...(s.up ? { up: true as const, spin: wrapSpin(s.spin) } : {}),
     // §1.11: written only below 100, the canonical form, and only when valid.
     ...(readOpacity(s.opacity) !== undefined ? { opacity: s.opacity } : {}),
-    // §1.10: what this object carries for its placements, only what they reach.
+    // §1.10: what this object carries for its placements, flat, in key order.
     ...((): { objects?: Record<string, unknown> } => { const o = writtenObjects(s); return o ? { objects: o } : {} })(),
     // Fields this library does not know, written back as they were read
     // (ShardModel.extra). Last, and filtered again, so a known field is always

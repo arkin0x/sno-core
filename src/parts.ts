@@ -16,6 +16,8 @@
  * table of the object being drawn is looked in first, at every depth, then the
  * table of the event the placing object travels in when it was fetched as its
  * own; an address a table holds is never fetched, even when its entry is bad.
+ * Only keys under the pubkey of the event a table travels in count, and a
+ * reader that does not know that pubkey honours none.
  */
 
 import { MAX_UNIT, PART_REACH, addressesIn, fromPayload, mirrorTurn, readObjects, ticksOf, toPayload, toRender, type Part, type Ref, type ShardModel } from './shards.js'
@@ -35,6 +37,16 @@ export type Missing =
   | 'cycle'
   /** Its unit plus the step leaves 0..84. */
   | 'scale'
+  /** Past MAX_PLACED, the most placements one resolve draws. */
+  | 'budget'
+
+/**
+ * The most placements one resolve draws, at every depth together; the rest are
+ * placeholders. Four levels of a few dozen placements each multiply fast: a
+ * 3.4 KB table was measured placing 838,000 objects (204 MB before a single
+ * mesh). A reader MAY bound its own work this way (DECK-0003 §1.10, §6).
+ */
+export const MAX_PLACED = 20_000
 
 /** A placement with what it places, or why it is a placeholder. */
 export interface Placed {
@@ -53,7 +65,20 @@ export interface Placed {
   children: Placed[]
 }
 
-/** What a client passes in: the payload the reference names (parsed JSON), or null when there is none. */
+/**
+ * What a fetch hands back when it knows whose event it read: the payload, and
+ * the pubkey of the event, so that an object fetched by `e` keeps its own table
+ * (§1.10: keys only under the pubkey of the event a table travels in). A fetch
+ * by `a` needs none, since the address names its author.
+ */
+export class Fetched {
+  constructor(readonly payload: unknown, readonly pubkey: string) {}
+}
+
+/**
+ * What a client passes in: the payload the reference names (parsed JSON), or a
+ * Fetched with the event's pubkey, or null when there is none.
+ */
 export type FetchRef = (ref: Ref) => Promise<unknown>
 
 /** One string per placed object, whatever relay hint came with it: for caching and for finding loops. */
@@ -63,7 +88,9 @@ export function refKey(ref: Ref): string {
 
 /** An `a` target's three parts, for a relay filter: kind, author and `d`. */
 export function parseAddress(target: string): { kind: number; pubkey: string; d: string } | null {
-  const m = /^(\d+):([0-9a-f]{64}):(.*)$/.exec(target)
+  // A `d` is any string, as NIP-01 allows, line breaks included (the `s` flag),
+  // as the reference reads it (sno-reference.py, re.S).
+  const m = /^(\d+):([0-9a-f]{64}):(.*)$/s.exec(target)
   return m ? { kind: Number(m[1]), pubkey: m[2], d: m[3] } : null
 }
 
@@ -85,15 +112,34 @@ function pubkeyOf(target: string): string | null {
 
 /**
  * The table `s` carries (§1.10), as a reader uses it: only keys under `author`,
- * the pubkey of the event it travels in, when that is known (a key under any
- * other pubkey is ignored and its address fetched). Never refuses: a table
- * that is not one reads as empty. The values are unchecked payloads.
+ * the pubkey of the event it travels in (a key under any other pubkey is
+ * ignored and its address fetched). Null, an author nobody knows, honours no
+ * key at all: never every key. Never refuses: a table that is not one reads
+ * as empty. The values are unchecked payloads.
  */
-export function carriedTable(s: Pick<ShardModel, 'objects'>, author?: string): Record<string, unknown> {
+export function carriedTable(s: Pick<ShardModel, 'objects'>, author: string | null): Record<string, unknown> {
   const t = s.objects
-  if (!t || typeof t !== 'object' || Array.isArray(t)) return {}
+  if (!author || !t || typeof t !== 'object' || Array.isArray(t)) return {}
   // Not copied: read only, and resolved once per draw.
-  return Object.fromEntries(Object.entries(t).filter(([k, v]) => v !== undefined && /^33331:[0-9a-f]{64}:/.test(k) && (!author || pubkeyOf(k) === author)))
+  return Object.fromEntries(Object.entries(t).filter(([k, v]) => {
+    const a = v === undefined ? null : parseAddress(k)
+    return a !== null && a.kind === 33331 && a.pubkey === author
+  }))
+}
+
+/**
+ * `model` as read from an event whose pubkey is `pubkey` (or null when it is not
+ * known): `author` set, and only the table keys under it kept, so that every
+ * draw after this takes the table as it is (§1.10). For a signed event that is
+ * its pubkey; for an unsigned item in a bag, the bag's signer, never the
+ * item's own claim. The same model when nothing changes.
+ */
+export function withAuthor(model: ShardModel, pubkey: string | null): ShardModel {
+  const kept = model.objects ? carriedTable(model, pubkey) : null
+  const sameTable = !model.objects || Object.keys(kept ?? {}).length === Object.keys(model.objects).length
+  if (sameTable && (model.author ?? null) === pubkey) return model
+  const { objects: _all, author: _was, ...bare } = model
+  return { ...bare, ...(pubkey ? { author: pubkey } : {}), ...(kept && Object.keys(kept).length ? { objects: kept } : {}) }
 }
 
 /**
@@ -111,14 +157,23 @@ export function carriedModel(
   if (!Object.prototype.hasOwnProperty.call(table, address)) return undefined
   const entry = table[address]
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
-  // The entry itself when it carries no table, so a reader that keeps models by
-  // payload (`read`) finds the same one every time.
   // Read under the reference's key, as a fetched object is, so a model has the
-  // same id whichever way it came.
-  const key = `a:${address}`
-  if (!('objects' in entry)) return read(entry, key)
-  const { objects: _nested, ...flat } = entry as Record<string, unknown>
-  return read(flat, key)
+  // same id whichever way it came; and from the same object every time for the
+  // same entry (flatOf), so a reader that keeps models by payload (`read`)
+  // finds the one it made.
+  return read(flatOf(entry), `a:${address}`)
+}
+
+/** An entry without a table of its own (a table is flat), the same object for the same entry. */
+const flats = new WeakMap<object, object>()
+function flatOf(entry: object): object {
+  if (!('objects' in entry)) return entry
+  let flat = flats.get(entry)
+  if (!flat) {
+    const { objects: _nested, ...rest } = entry as Record<string, unknown>
+    flats.set(entry, (flat = rest))
+  }
+  return flat
 }
 
 /** How resolveParts is called. */
@@ -127,11 +182,12 @@ export interface ResolveOptions {
   self?: Ref
   /**
    * The pubkey of the event `model` travels in (or of its author, for an object
-   * not yet published), so that keys of its table under any other pubkey are
-   * ignored (§1.10). Defaults to the pubkey `self` names. When neither is known
-   * every key is honoured, which is only right for a caller that checked.
+   * not yet published): only keys of its table under it count (§1.10). Null
+   * says it is not known, and no key counts. Left out, it is `model.author`
+   * (withAuthor), else the pubkey an `a` `self` names, else null: a table is
+   * never honoured on no one's word.
    */
-  author?: string
+  author?: string | null
   /**
    * How a payload, fetched or from a table, becomes a model: `fromPayload` by
    * default. A client that keeps one model per payload object for the whole
@@ -148,28 +204,32 @@ export interface ResolveOptions {
  * Each placement's address is looked up first in `model`'s own table, at any
  * depth, then in the table of the event the placing object travels in when
  * that is another one (an object fetched by its `a` address, whose keys must be
- * under that address's pubkey; an object fetched by `e` brings no table, since
- * its author is not known here), and only what neither holds is fetched
- * (§1.10). The third argument may be a bare `self` reference, as it was before
- * tables existed.
+ * under that address's pubkey; an object fetched by `e`, under the pubkey the
+ * fetch says in a Fetched, and none when it does not say), and only what
+ * neither holds is fetched (§1.10). No more than MAX_PLACED placements are
+ * drawn, the rest placeholders. The third argument may be a bare `self`
+ * reference, as it was before tables existed.
  */
 export async function resolveParts(model: ShardModel, fetch: FetchRef, options?: Ref | ResolveOptions): Promise<Placed[]> {
   const opts: ResolveOptions = Array.isArray(options) ? { self: options } : options ?? {}
   const self = opts.self
-  const author = opts.author ?? (self && self[0] === 'a' ? pubkeyOf(self[1]) ?? undefined : undefined)
+  const author = opts.author !== undefined ? opts.author : model.author ?? (self && self[0] === 'a' ? pubkeyOf(self[1]) : null)
   const read = opts.read ?? fromPayload
   const root = carriedTable(model, author)
+  let placedCount = 0
   const fetched = new Map<string, Promise<{ model: ShardModel; table?: Record<string, unknown> } | Missing>>()
   const load = (ref: Ref) => {
     const key = refKey(ref)
     let got = fetched.get(key)
     if (!got) {
       got = fetch(ref).then(
-        (payload) => {
+        (answer) => {
+          const payload = answer instanceof Fetched ? answer.payload : answer
           const m = payload == null ? null : read(payload, key)
           if (!m) return payload == null ? 'unreachable' as const : 'invalid' as const
-          // The fetched object's own table, keys only under its own pubkey.
-          const pk = ref[0] === 'a' ? pubkeyOf(ref[1]) : null
+          // The fetched object's own table, keys only under its own pubkey:
+          // the address's for an `a`, the event's (if the fetch said) for an `e`.
+          const pk = ref[0] === 'a' ? pubkeyOf(ref[1]) : answer instanceof Fetched ? answer.pubkey : null
           return pk ? { model: m, table: carriedTable(m, pk) } : { model: m }
         },
         () => 'unreachable' as const,
@@ -196,6 +256,7 @@ export async function resolveParts(model: ShardModel, fetch: FetchRef, options?:
       const key = refKey(ref)
       if (chain.has(key)) return { part, ref, model: null, missing: 'cycle', children: [] }
       if (depth > MAX_PART_DEPTH) return { part, ref, model: null, missing: 'deep', children: [] }
+      if (++placedCount > MAX_PLACED) return { part, ref, model: null, missing: 'budget', children: [] }
       let got: ShardModel | null | undefined
       // The table of the event the placed object travels in, for its own placements.
       let table: Record<string, unknown> | undefined
@@ -233,13 +294,16 @@ export function carriedPayload(object: ShardModel): Record<string, unknown> {
  * `root` carrying `object` under `address` (§1.10), replacing any entry there.
  * A writer flattens: whatever `object` carries itself goes into `root`'s table
  * too, under keys the table does not already hold (the root's table is looked
- * in first, so an entry it holds already is the one that is drawn). `address`
- * is not checked against `root`'s refs here; `toPayload` writes only what a
- * placement reaches.
+ * in first, so an entry it holds already is the one that is drawn), and only
+ * keys under the pubkey `address` names, the writer's own (a publisher MUST
+ * write no other). `address` is not checked against `root`'s refs here.
  */
 export function carryObject(root: ShardModel, address: string, object: ShardModel): ShardModel {
   const table: Record<string, unknown> = { ...(root.objects ?? {}) }
-  for (const [k, v] of Object.entries(readObjects(object.objects) ?? {})) if (!Object.prototype.hasOwnProperty.call(table, k) && k !== address) table[k] = v
+  const writer = pubkeyOf(address)
+  for (const [k, v] of Object.entries(readObjects(object.objects) ?? {})) {
+    if (!Object.prototype.hasOwnProperty.call(table, k) && k !== address && pubkeyOf(k) === writer) table[k] = v
+  }
   table[address] = carriedPayload(object)
   return { ...root, objects: Object.fromEntries(Object.entries(table)) }
 }
@@ -263,8 +327,10 @@ export interface CarryChoice {
  * `root` carrying every object `lookup` chooses, at any depth, flattened into
  * `root`'s one table (§1.10): the writer's half of the rule a reader follows.
  * Walks `root`'s placements and then the placements of each object `lookup`
- * returns, no deeper than MAX_PART_DEPTH, each address once, and never into an
- * address already among the parents. An address the table already holds is
+ * returns, no deeper than MAX_PART_DEPTH, each address at the shallowest depth
+ * any placement reaches it (an address met first deep down and again nearer
+ * the top is walked again from there, so what it places is carried too), and
+ * never into an address already among the parents. An address the table already holds is
  * kept as it is (and walked through), so an edited copy is never replaced by
  * the object it was copied from. `lookup` is given the reference as written,
  * relay hint included, and returns null for one to leave alone, for example
@@ -285,26 +351,34 @@ export function carryAll(
   options: { prune?: boolean } = {},
 ): ShardModel {
   let out = root
-  const done = new Set<string>()
+  // The shallowest depth each address was walked at, and what it was walked as.
+  const shallowest = new Map<string, number>()
+  const walked = new Map<string, ShardModel | null>()
   const visit = (m: ShardModel, depth: number, chain: Set<string>): void => {
     if (depth > MAX_PART_DEPTH) return
     const used = new Set((m.parts ?? []).map((p) => p.ref))
     for (const [i, ref] of (m.refs ?? []).entries()) {
-      if (!used.has(i) || ref[0] !== 'a' || chain.has(ref[1]) || done.has(ref[1])) continue
-      done.add(ref[1])
-      const held = out.objects ? carriedModel(out.objects, ref[1]) : undefined
-      let next: ShardModel | null = held ?? null
-      if (held === undefined) {
-        const choice = lookup(ref)
-        if (!choice) continue
-        if (choice.carry) out = carryObject(out, ref[1], choice.object)
-        next = choice.object
+      if (!used.has(i) || ref[0] !== 'a' || chain.has(ref[1])) continue
+      const before = shallowest.get(ref[1])
+      if (before !== undefined && before <= depth) continue
+      shallowest.set(ref[1], depth)
+      let next = walked.get(ref[1])
+      if (next === undefined) {
+        // Asked once per address, however often it is met.
+        const held = out.objects ? carriedModel(out.objects, ref[1]) : undefined
+        next = held ?? null
+        if (held === undefined) {
+          const choice = lookup(ref)
+          if (choice?.carry) out = carryObject(out, ref[1], choice.object)
+          next = choice ? choice.object : null
+        }
+        walked.set(ref[1], next)
       }
       if (next) visit(next, depth + 1, new Set([...chain, ref[1]]))
     }
   }
   visit(root, 1, new Set())
-  if (options.prune) for (const k of Object.keys(out.objects ?? {})) if (!done.has(k)) out = uncarry(out, k)
+  if (options.prune) for (const k of Object.keys(out.objects ?? {})) if (!shallowest.has(k)) out = uncarry(out, k)
   return out
 }
 
@@ -413,10 +487,18 @@ export function addPart(s: ShardModel, ref: Ref, place: Omit<Part, 'ref'>): { sh
   return { shard: { ...s, refs, parts }, index: parts.length - 1 }
 }
 
+/** Whether a raw payload places anything by `e`, which is always fetched. */
+function placesByEvent(raw: unknown): boolean {
+  const refs = raw && typeof raw === 'object' ? (raw as { refs?: unknown }).refs : undefined
+  return Array.isArray(refs) && refs.some((r) => Array.isArray(r) && r[0] === 'e')
+}
+
 /**
  * The object without the placements at `indices`; references no placement uses
  * any more go, and the rest renumber. A carried object (§1.10) whose reference
- * goes goes with it, unless another entry of the table still places it.
+ * goes goes with it, unless something left can still reach it: another entry
+ * of the table, or any placement that is fetched, since what a fetched object
+ * places is looked up in this table too and cannot be seen from here.
  */
 export function removeParts(s: ShardModel, indices: Iterable<number>): ShardModel {
   const gone = new Set(indices)
@@ -443,9 +525,15 @@ export function removeParts(s: ShardModel, indices: Iterable<number>): ShardMode
     }
     const addresses = (rs: Ref[]): string[] => rs.filter((r) => r[0] === 'a').map((r) => r[1])
     const still = reach(addresses(refs))
-    // Only what the removed placements reached: an entry neither reaches may be
-    // placed beneath a fetched object, which this cannot see.
-    for (const a of reach(addresses(s.refs ?? []))) if (!still.has(a)) out = uncarry(out, a)
+    // A placement still standing that is fetched (an `e`, or an `a` the table
+    // does not hold) may place anything, beneath it where this cannot see, and
+    // the root's table answers there too: then nothing is dropped.
+    const fetchedStill = refs.some((r) => r[0] === 'e') ||
+      [...still].some((a) => !Object.prototype.hasOwnProperty.call(table, a)) ||
+      [...still].some((a) => Object.prototype.hasOwnProperty.call(table, a) && placesByEvent(table[a]))
+    // Only what the removed placements reached, and only when every placement
+    // left is one this can see into.
+    if (!fetchedStill) for (const a of reach(addresses(s.refs ?? []))) if (!still.has(a)) out = uncarry(out, a)
   }
   return out
 }

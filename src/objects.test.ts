@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { carriedModel, carriedTable, carryAll, carryObject, removeParts, resolveParts, uncarry, type FetchRef } from './parts.js'
+import { Fetched, MAX_PLACED, carriedModel, carriedTable, carryAll, carryObject, parseAddress, removeParts, resolveParts, uncarry, withAuthor, type FetchRef } from './parts.js'
+import { objectFromEvent } from './feed.js'
 import { fromPayload, liftKnown, normalizeStored, toPayload, type Ref, type ShardModel } from './shards.js'
 
 // DECK-0003 §1.10: an object may carry the objects it places, in `objects`.
@@ -150,11 +151,11 @@ describe('resolveParts with a table', () => {
     const published = payload({ name: 'pub', refs: [ref('a', THEM), ref('b', THEM)], parts: [PLACE, [1, 0, 0, 0, 0, 0, 0, 0]], objects: { [at('a', THEM)]: payload({ name: 'own a' }), [at('b', THEM)]: payload({ name: 'own b' }), [at('x')]: stone } })
     const { fetch, asked } = relayOf({ [at('pub', THEM)]: published })
     const root = parent(['pub'], { [at('a', THEM)]: payload({ name: 'root a' }) }, THEM)
-    // Without an author check the root's entry for THEM's address is honoured, and wins.
-    const placed = await resolveParts(root, fetch)
+    // The root is THEM's, so its entry for THEM's address counts, and is looked in first.
+    const placed = await resolveParts(root, fetch, { author: THEM })
     expect(asked).toEqual([at('pub', THEM)])
     expect(placed[0].children.map((c) => c.model?.name)).toEqual(['root a', 'own b'])
-    // With it, the root's key under THEM is ignored and the fetched object's own answers.
+    // Under ME, the root's key under THEM is ignored and the fetched object's own answers.
     const strict = await resolveParts(root, relayOf({ [at('pub', THEM)]: published }).fetch, { author: ME })
     expect(strict[0].children.map((c) => c.model?.name)).toEqual(['own a', 'own b'])
   })
@@ -175,7 +176,7 @@ describe('resolveParts with a table', () => {
     const seen: string[] = []
     const read = (p: unknown, key: string): ShardModel | null => { seen.push(key); return fromPayload(p, key) }
     const s = read0(['w', 'tile'])
-    await resolveParts(s, relayOf({ [at('tile')]: stone }).fetch, { read })
+    await resolveParts(s, relayOf({ [at('tile')]: stone }).fetch, { read, author: ME })
     expect(seen.sort()).toEqual([`a:${at('tile')}`, `a:${at('w')}`].sort())
   })
 
@@ -225,5 +226,109 @@ describe('writing a table', () => {
     const placed = await resolveParts(fromPayload(toPayload(out), 'p') as ShardModel, relayOf().fetch, { author: ME })
     expect(placed.map((p) => p.carried ?? false)).toEqual([false, true, false])
     expect(carriedTable(fromPayload(toPayload(out), 'p') as ShardModel, ME)[at('under')]).toBeDefined()
+  })
+})
+
+describe('the review of #21', () => {
+  const placer = (name: string, ds: string[], over: Record<string, unknown> = {}): Record<string, unknown> =>
+    payload({ name, vertices: [], colors: [], refs: ds.map((d) => ref(d)), parts: ds.map((_, i) => [i, 0, 0, 0, 0, 0, 0, 0]), ...over })
+  const m = (p: Record<string, unknown>): ShardModel => fromPayload(p, 'x') as ShardModel
+
+  it('carryAll walks an address again when it is met nearer the top, so what it places is carried', async () => {
+    // A > B > C > X reaches X at depth 4; the root also places X at depth 1, and X places Y.
+    const pieces: Record<string, ShardModel> = { A: m(placer('A', ['B'])), B: m(placer('B', ['C'])), C: m(placer('C', ['X'])), X: m(placer('X', ['Y'])), Y: m(payload({ name: 'Y' })) }
+    const out = carryAll(m(placer('root', ['A', 'X'])), ([, a]) => {
+      const d = a.split(':')[2]
+      return pieces[d] ? { object: pieces[d], carry: true } : null
+    })
+    expect(Object.keys(out.objects ?? {}).map((k) => k.split(':')[2]).sort()).toEqual(['A', 'B', 'C', 'X', 'Y'])
+    const { fetch, asked } = relayOf()
+    await resolveParts(fromPayload(toPayload(out), 'r') as ShardModel, fetch, { author: ME })
+    expect(asked).toEqual([])
+    // And prune keeps an edited copy of Y the same way.
+    const held = m(placer('root', ['A', 'X'], { objects: { [at('Y')]: payload({ name: 'edited Y' }) } }))
+    const pruned = carryAll(held, ([, a]) => { const d = a.split(':')[2]; return pieces[d] ? { object: pieces[d], carry: true } : null }, { prune: true })
+    expect((pruned.objects?.[at('Y')] as { name: string }).name).toBe('edited Y')
+  })
+
+  it('honours no key when no author is known, never every key', async () => {
+    const forged = read({ vertices: [], colors: [], refs: [ref('tile', THEM)], parts: [PLACE], objects: { [at('tile', THEM)]: payload({ name: 'FORGED' }) } })
+    for (const options of [undefined, ['e', 'ef'.repeat(32)] as Ref, { author: null }]) {
+      const placed = await resolveParts(forged, relayOf().fetch, options)
+      expect(placed[0].model, JSON.stringify(options)).toBeNull()
+      expect(placed[0].missing).toBe('unreachable')
+    }
+    expect(carriedTable(forged, null)).toEqual({})
+    // withAuthor sets the author and keeps only its keys; resolveParts then uses it.
+    const mine = withAuthor(read({ vertices: [], colors: [], refs: [ref('w')], parts: [PLACE], objects: { [at('w')]: water, [at('x', THEM)]: stone } }), ME)
+    expect(mine.author).toBe(ME)
+    expect(Object.keys(mine.objects ?? {})).toEqual([at('w')])
+    expect((await resolveParts(mine, relayOf().fetch))[0].model?.name).toBe('water')
+    expect(withAuthor(mine, ME)).toBe(mine)
+    expect(withAuthor(mine, null).objects).toBeUndefined()
+  })
+
+  it('removeParts keeps an entry a fetched object still standing may place', () => {
+    const root = m(placer('root', ['W', 'P'], { objects: { [at('W')]: payload({ name: 'W' }) } }))
+    expect(removeParts(root, [0]).objects?.[at('W')]).toBeDefined()
+    // With nothing fetched left, it goes.
+    const alone = m(placer('root', ['W', 'Z'], { objects: { [at('W')]: payload({ name: 'W' }), [at('Z')]: payload({ name: 'Z' }) } }))
+    expect(Object.keys(removeParts(alone, [0]).objects ?? {})).toEqual([at('Z')])
+  })
+
+  it('carryObject brings in only keys under the writer\'s own pubkey', () => {
+    const inner = { ...m(placer('inner', ['deep'])), objects: { [at('deep')]: stone, [at('z', THEM)]: water } }
+    const out = carryObject(m(placer('root', ['inner'])), at('inner'), inner)
+    expect(Object.keys(out.objects ?? {}).sort()).toEqual([at('deep'), at('inner')].sort())
+  })
+
+  it('an object fetched by e keeps its own table under the pubkey the fetch says', async () => {
+    const pub = placer('pub', ['q'], { objects: { [at('q')]: payload({ name: 'q' }) } })
+    const root = read({ vertices: [], colors: [], refs: [['e', 'ef'.repeat(32)]], parts: [PLACE] })
+    const told = await resolveParts(root, async (r) => (r[0] === 'e' ? new Fetched(pub, ME) : null), { author: ME })
+    expect(told[0].children[0].model?.name).toBe('q')
+    const untold = await resolveParts(root, async (r) => (r[0] === 'e' ? pub : null), { author: ME })
+    expect(untold[0].children[0].missing).toBe('unreachable')
+  })
+
+  it('a d is any string, line breaks included', async () => {
+    const a = `33331:${ME}:line\nbreak`
+    expect(parseAddress(a)?.d).toBe('line\nbreak')
+    const s = read({ vertices: [], colors: [], refs: [['a', a]], parts: [PLACE], objects: { [a]: water } })
+    expect(Object.keys(carriedTable(s, ME))).toEqual([a])
+    expect((await resolveParts(s, relayOf().fetch, { author: ME }))[0].model?.name).toBe('water')
+  })
+
+  it('writes the table in code point order, one spelling', () => {
+    const s = parent(['b', 'a'], { [at('b')]: stone, [at('a')]: water })
+    expect(Object.keys(toPayload(s).objects ?? {})).toEqual([at('a'), at('b')])
+  })
+
+  it(`draws no more than ${MAX_PLACED} placements in one resolve, the rest placeholders`, async () => {
+    const many = (d: string, n: number): Record<string, unknown> => payload({ name: d, vertices: [], colors: [], refs: [ref(d)], parts: Array.from({ length: n }, (_, i) => [0, i, 0, 0, 0, 0, 0, 0]) })
+    const root = { ...m(many('A', 60)), objects: { [at('A')]: many('B', 60), [at('B')]: many('C', 60), [at('C')]: payload({ name: 'C' }) } }
+    const placed = await resolveParts(root, relayOf().fetch, { author: ME })
+    let drawn = 0, over = 0
+    const count = (xs: typeof placed): void => { for (const x of xs) { if (x.model) drawn++; if (x.missing === 'budget') over++; count(x.children) } }
+    count(placed)
+    expect(drawn).toBeLessThanOrEqual(MAX_PLACED)
+    expect(over).toBeGreaterThan(0)
+  })
+
+  it('the feed keeps only its author\'s keys, and says who that is', () => {
+    const content = JSON.stringify({ ...placer('chair', ['tile']), objects: { [at('tile')]: water, [at('chair', THEM)]: stone } })
+    const o = objectFromEvent({ id: 'f'.repeat(64), pubkey: ME, created_at: 1, kind: 33331, tags: [['d', 'set']], content })
+    expect(o?.shard.author).toBe(ME)
+    expect(Object.keys(o?.shard.objects ?? {})).toEqual([at('tile')])
+  })
+
+  it('reads an entry with a table of its own from the same object every time', () => {
+    const table = { [at('w')]: { ...water, objects: { [at('x')]: stone } } }
+    const seen: unknown[] = []
+    const reader = (p: unknown, k: string): ShardModel | null => { seen.push(p); return fromPayload(p, k) }
+    carriedModel(table, at('w'), reader)
+    carriedModel(table, at('w'), reader)
+    expect(seen[0]).toBe(seen[1])
+    expect(seen[0]).not.toHaveProperty('objects')
   })
 })
