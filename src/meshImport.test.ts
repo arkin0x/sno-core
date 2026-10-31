@@ -20,7 +20,7 @@ import { parseStl } from './stl.js'
 import { parseGltf } from './gltf.js'
 import { parseVox } from './vox.js'
 import { parseObj } from './obj.js'
-import { TICKS_PER_UNIT as T, fromPayload, ticksOf, toPayload, unpackTicks, validFace, type ShardModel } from './shards.js'
+import { MAX_EXTENT, TICKS_PER_UNIT as T, fromPayload, ticksOf, toPayload, unpackTicks, validFace, type ShardModel } from './shards.js'
 import { BUILT_IN, indexOf, toBytes } from './snoPalette.js'
 
 const clock = () => makeClock(60_000)
@@ -57,7 +57,7 @@ function expectValid(s: ShardModel, budget = IMPORT_BUDGET_BYTES): void {
   expect(back!.vertices.map(ticksOf)).toEqual(s.vertices.map(ticksOf))
   expect(back!.faces).toEqual(s.faces)
   expect(s.extent).toBeGreaterThanOrEqual(1)
-  expect(s.extent).toBeLessThanOrEqual(64)
+  expect(s.extent).toBeLessThanOrEqual(MAX_EXTENT)
   for (const v of s.vertices) for (const t of ticksOf(v)) expect(Math.abs(t)).toBeLessThanOrEqual(s.extent * T)
   for (const f of s.faces) expect(validFace(f, s.vertices.length)).toBe(true)
   // Every color is exactly a palette entry, so the trip to the wire is exact.
@@ -184,9 +184,9 @@ describe('the fit', () => {
     expect(box(s).max[1]).toBe(4 * T)
   })
 
-  it('never reaches past the 64-unit position bound, however large the fit asked', () => {
-    const s = run('cube.ply', plyAscii({ points: CUBE_POINTS, faces: CUBE_QUADS }), { fit: 10_000 * T }).shard
-    expect(s.extent).toBeLessThanOrEqual(64)
+  it('never reaches past the position bound, however large the fit asked', () => {
+    const s = run('cube.ply', plyAscii({ points: CUBE_POINTS, faces: CUBE_QUADS }), { fit: MAX_EXTENT * 2 * T }).shard
+    expect(s.extent).toBeLessThanOrEqual(MAX_EXTENT)
     expectValid(s)
   })
 })

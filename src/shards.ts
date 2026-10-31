@@ -369,7 +369,27 @@ function carried(extra: Record<string, unknown>): Record<string, unknown> {
 /** Default half-width of the build grid, in units; each shard keeps its own (`extent`). */
 export const GRID_HALF = 8
 export const MIN_EXTENT = 1
-export const MAX_EXTENT = 64
+/**
+ * The furthest a publisher may put anything from the origin, in units, on any
+ * axis (DECK-0003 §1.8). 2^12, because that is the largest power of two at
+ * which every tick draws within a quarter of a tick of where it belongs with
+ * room to spare.
+ * What sets it is the 32-bit float every GPU draws in, and not only the
+ * position: the attribute, the model-view matrix and their product are all
+ * 32-bit, so near the far corner the error adds up beyond the rounding of the
+ * position alone. Simulated worst error, camera close to the far corner: 4,096
+ * units 0.13 of a tick, 8,192 units 0.24 to 0.28 (on the line), 16,384 units
+ * 0.51, 32,768 units 1.00 with ticks collapsing, 65,536 units 2.10. More than
+ * this needs camera-relative rendering. It was 64 from 2026-09-05 to 2026-10-31, chosen for the first GRID
+ * panel and never derived from anything.
+ */
+export const MAX_EXTENT = 4096
+/**
+ * The bound as it stood when a stored model could still hold total ticks in
+ * `p`. It only tells those models apart (normalizeStored), so it never moves,
+ * whatever MAX_EXTENT becomes.
+ */
+const LEGACY_MAX_EXTENT = 64
 
 // There is no ceiling on vertices or faces (DECK-0003 §1.8, 2026-09-24): the
 // event's size is the relay's concern, as it is for every other kind. The
@@ -437,8 +457,15 @@ export function validPoint(p: [number, number, number], extent: number = GRID_HA
 /**
  * A stored model made whole again. Models have always kept `p` in units; for
  * a short while after ticks arrived they kept total ticks there instead, and
- * such a model shows itself by a coordinate no grid could hold (above
- * MAX_EXTENT units). Those are split back into units and ticks.
+ * such a model shows itself by a coordinate no grid could hold then (above 64
+ * units) that its own extent does not hold either. Those are split back into
+ * units and ticks.
+ *
+ * Both tests are needed. A model of that time has an extent of 64 at most, so
+ * for those the answer is what it always was. A later model on a larger grid
+ * has an extent that holds its points, because every path that writes one
+ * keeps it so (neededExtent), and reading its 100 as 100 ticks would shrink
+ * the author's work by a factor of 120 on every reload.
  */
 export function normalizeStored(saved: ShardModel): ShardModel {
   // A field an older version carried in `extra` and this one knows (liftKnown),
@@ -451,7 +478,8 @@ export function normalizeStored(saved: ShardModel): ShardModel {
   // Models from before the pose have no `up` or `spin`: they lie as built.
   const stored = s as Partial<ShardModel>
   const posed = stored.up === undefined || stored.spin === undefined ? { ...s, up: stored.up ?? false, spin: stored.spin ?? 0 } : s
-  const inTicks = posed.vertices.some((v) => v.t === undefined && v.p.some((c) => Math.abs(c) > MAX_EXTENT))
+  const holds = Math.max(LEGACY_MAX_EXTENT, Number.isInteger(posed.extent) ? posed.extent : 0)
+  const inTicks = posed.vertices.some((v) => v.t === undefined && v.p.some((c) => Math.abs(c) > holds))
   if (!inTicks) return posed
   return { ...posed, vertices: posed.vertices.map((v) => vertexAt(v.p, v.c)) }
 }
@@ -505,8 +533,8 @@ function flipZ(v: ShardVertex): ShardVertex {
   return vertexAt([x, y, 0 - z], v.c)
 }
 
-/** The 64-unit position bound of DECK-0003 §1.8, in ticks: how far a placement may stand. */
-export const PART_REACH = 64 * TICKS_PER_UNIT
+/** The position bound of DECK-0003 §1.8, in ticks: how far a placement may stand. */
+export const PART_REACH = MAX_EXTENT * TICKS_PER_UNIT
 
 const HEX64 = /^[0-9a-f]{64}$/
 const ADDRESS = /^33331:[0-9a-f]{64}:/
