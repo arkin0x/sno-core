@@ -19,26 +19,43 @@ const wire = (vertex: [number, number, number], extent?: unknown): unknown => ({
 /** The rule as it stood at 64, kept verbatim: what every stored model of that time was read by. */
 const oldInTicks = (m: ShardModel): boolean => m.vertices.some((v) => v.t === undefined && v.p.some((c) => Math.abs(c) > 64))
 
-describe('why 2^16 units', () => {
-  it('draws every tick within a quarter of a tick, in the 32-bit floats a GPU draws in', () => {
-    const tick = 1 / TICKS_PER_UNIT
-    let worst = 0
-    for (let k = 1; k <= 2400; k++) {
-      const exact = MAX_EXTENT - k * tick
-      worst = Math.max(worst, Math.abs(Math.fround(exact) - exact))
-    }
-    expect(worst).toBeLessThanOrEqual(1 / 512)
-    expect(worst).toBeLessThan(tick / 4)
+/**
+ * What a GPU draws for a vertex near the far corner of a grid, with the camera
+ * close to it. The position attribute, the model-view uniform and the multiply
+ * are all 32-bit floats, in GLSL's order. The worst error, in ticks.
+ */
+function worstDrawnError(extent: number, distance: number): number {
+  const f = Math.fround
+  const tick = 1 / TICKS_PER_UNIT
+  const dot = (a: number[], b: number[]): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+  const cross = (a: number[], b: number[]): number[] => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+  const unit = (a: number[]): number[] => { const l = Math.hypot(a[0], a[1], a[2]); return a.map((x) => x / l) }
+  let seed = 12345
+  const rnd = (): number => { seed = (seed * 48271) % 2147483647; return seed / 2147483647 }
+  let worst = 0
+  for (let k = 0; k < 4000; k++) {
+    const p = [0, 1, 2].map(() => Math.round((extent - rnd() * 3) * TICKS_PER_UNIT) / TICKS_PER_UNIT)
+    const d = unit([rnd() - 0.5, rnd() - 0.5, rnd() - 0.5])
+    const eye = p.map((v, i) => v + distance * d[i])
+    const z = unit([eye[0] - p[0], eye[1] - p[1], eye[2] - p[2]])
+    const x = unit(cross([0, 1, 0], z))
+    const y = cross(z, x)
+    const columns = [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]], [-dot(x, eye), -dot(y, eye), -dot(z, eye)]]
+    const drawn = [0, 1, 2].map((i) => f(f(f(f(columns[0][i]) * f(p[0])) + f(f(columns[1][i]) * f(p[1]))) + f(f(columns[2][i]) * f(p[2]))) + f(columns[3][i]))
+    const exact = [0, 1, 2].map((i) => columns[0][i] * p[0] + columns[1][i] * p[1] + columns[2][i] * p[2] + columns[3][i])
+    worst = Math.max(worst, Math.hypot(drawn[0] - exact[0], drawn[1] - exact[1], drawn[2] - exact[2]) / tick)
+  }
+  return worst
+}
+
+describe('why 2^12 units', () => {
+  it('draws every tick within a quarter of a tick, through the 32-bit model-view matrix a GPU multiplies by', () => {
+    for (const distance of [0.6, 3]) expect(worstDrawnError(MAX_EXTENT, distance)).toBeLessThanOrEqual(0.25)
   })
 
-  it('keeps neighbouring ticks at least two float steps apart when drawn; four times the bound would not', () => {
-    const apart = (reach: number): number => {
-      let least = Infinity
-      for (let k = 1; k <= 2400; k++) least = Math.min(least, Math.fround(reach - (k - 1) / TICKS_PER_UNIT) - Math.fround(reach - k / TICKS_PER_UNIT))
-      return least
-    }
-    expect(apart(MAX_EXTENT)).toBeGreaterThanOrEqual(2 / 256)
-    expect(apart(MAX_EXTENT * 4)).toBeLessThan(2 / 256)
+  it('is the largest power of two that does with room to spare: the next sits on the line, and the one after is past it', () => {
+    expect(Math.max(worstDrawnError(MAX_EXTENT, 0.6), worstDrawnError(MAX_EXTENT, 3))).toBeLessThan(0.2)
+    expect(Math.max(worstDrawnError(MAX_EXTENT * 4, 0.6), worstDrawnError(MAX_EXTENT * 4, 3))).toBeGreaterThan(0.25)
   })
 
   it('is a whole power of two, and fits the safe integers by a very long way', () => {
@@ -69,9 +86,9 @@ describe('the bound on a grid', () => {
   })
 
   it('writes a large model and reads it back the same', () => {
-    const m = shard([at([1000, -70, 65536]), { p: [65, 0, 0], t: [7, 0, 0], c: WHITE }], 65536)
+    const m = shard([at([1000, -70, MAX_EXTENT]), { p: [65, 0, 0], t: [7, 0, 0], c: WHITE }], MAX_EXTENT)
     const back = fromPayload(JSON.parse(JSON.stringify(toPayload(m))), 'x')!
-    expect(back.extent).toBe(65536)
+    expect(back.extent).toBe(MAX_EXTENT)
     expect(back.vertices.map(ticksOf)).toEqual(m.vertices.map(ticksOf))
   })
 
@@ -99,10 +116,10 @@ describe('a placement past the old 64 units', () => {
 
 describe('normalizeStored', () => {
   it('leaves a larger model in units alone across a reload: 100 stays 100 units, not 100 ticks', () => {
-    const m = shard([at([100, 0, -100]), at([0, 65536, 0])], 65536)
+    const m = shard([at([100, 0, -100]), at([0, MAX_EXTENT, 0])], MAX_EXTENT)
     const stored = JSON.parse(JSON.stringify(m)) as ShardModel
     expect(normalizeStored(stored).vertices).toEqual(m.vertices)
-    expect(neededExtent(normalizeStored(stored))).toBe(65536)
+    expect(neededExtent(normalizeStored(stored))).toBe(MAX_EXTENT)
   })
 
   it('still reads a model from the ticks days as ticks, on any grid of that time', () => {

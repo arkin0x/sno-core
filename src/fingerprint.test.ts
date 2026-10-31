@@ -4,6 +4,7 @@
  * scale and mirroring, and every triangle reaches the fingerprint whole.
  */
 
+import { MAX_EXTENT } from './shards'
 import { describe, it, expect } from 'vitest'
 import { canonicalGeometryText } from './fingerprint.js'
 import { fromPayload, newShard, toPayload, vertexAt, type ShardModel, type ShardVertex } from './shards.js'
@@ -259,8 +260,8 @@ describe('canonicalGeometryText: range', () => {
     expect(fingerprintTokens(text)).toEqual([text])
   })
 
-  it('spells the position bound of §1.8 as single tokens too, 2^16 units a side', () => {
-    const b = 65536 * 120
+  it('spells the position bound of §1.8 as single tokens too', () => {
+    const b = MAX_EXTENT * 120
     const text = canonicalGeometryText(model([[-b, -b, -b], [b, -b, -b], [-b, b, b]], [[0, 1, 2]]))
     expect(fingerprintTokens(text)).toEqual([text])
   })

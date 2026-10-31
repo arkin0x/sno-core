@@ -371,14 +371,19 @@ export const GRID_HALF = 8
 export const MIN_EXTENT = 1
 /**
  * The furthest a publisher may put anything from the origin, in units, on any
- * axis (DECK-0003 §1.8). 2^16, because that is where the lattice meets the
- * 32-bit floats every GPU draws in: from 2^15 to 2^16 a float's spacing is
- * 1/256 of a unit, so no tick lands more than 1/512 of a unit from where it
- * belongs, under a quarter of a tick's 1/120. Past 2^17 two neighbouring ticks
- * can draw as one. It was 64 from 2026-09-05 to 2026-10-31, chosen for the
- * first GRID panel and never derived from anything.
+ * axis (DECK-0003 §1.8). 2^12, because that is the largest power of two at
+ * which every tick draws within a quarter of a tick of where it belongs with
+ * room to spare.
+ * What sets it is the 32-bit float every GPU draws in, and not only the
+ * position: the attribute, the model-view matrix and their product are all
+ * 32-bit, so near the far corner the error adds up beyond the rounding of the
+ * position alone. Simulated worst error, camera close to the far corner: 4,096
+ * units 0.13 of a tick, 8,192 units 0.24 to 0.28 (on the line), 16,384 units
+ * 0.51, 32,768 units 1.00 with ticks collapsing, 65,536 units 2.10. More than
+ * this needs camera-relative rendering. It was 64 from 2026-09-05 to 2026-10-31, chosen for the first GRID
+ * panel and never derived from anything.
  */
-export const MAX_EXTENT = 65536
+export const MAX_EXTENT = 4096
 /**
  * The bound as it stood when a stored model could still hold total ticks in
  * `p`. It only tells those models apart (normalizeStored), so it never moves,
