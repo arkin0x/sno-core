@@ -259,6 +259,12 @@ describe('canonicalGeometryText: range', () => {
     expect(fingerprintTokens(text)).toEqual([text])
   })
 
+  it('spells the position bound of §1.8 as single tokens too, 2^16 units a side', () => {
+    const b = 65536 * 120
+    const text = canonicalGeometryText(model([[-b, -b, -b], [b, -b, -b], [-b, b, b]], [[0, 1, 2]]))
+    expect(fingerprintTokens(text)).toEqual([text])
+  })
+
   it('refuses a coordinate that is not a safe integer instead of spelling it wrong', () => {
     // 1e21 would print as "1e+21"; past 2^53 a number names more than one position.
     const huge: ShardModel = { ...newShard('h'), mode: 'solid', vertices: [
