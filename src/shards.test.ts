@@ -860,3 +860,55 @@ describe('opacity (DECK-0003 §1.11)', () => {
     expect(drawnOpacity({ opacity: 0 })).toBe(1)
   })
 })
+
+describe('run lengths are checked before they are expanded', () => {
+  // A run longer than the declared count is refused, and refused before any
+  // entry is made from it. These run `fn` with Array.prototype.push wrapped
+  // to throw past `limit` calls, so a refusal that came after expanding
+  // shows up as a failed test.
+  const pushesAtMost = <T>(limit: number, fn: () => T): T => {
+    const push = Array.prototype.push
+    let n = 0
+    Array.prototype.push = function (this: unknown[], ...items: unknown[]) {
+      if (++n > limit) throw new Error(`expanded past ${limit} entries`)
+      return push.apply(this, items)
+    }
+    try { return fn() } finally { Array.prototype.push = push }
+  }
+  const huge = [-1e6, -(2 ** 31), -Number.MAX_SAFE_INTEGER, -1e300]
+
+  it('refuses a ticks run longer than the vertices left', () => {
+    for (const run of huge) {
+      expect(pushesAtMost(1000, () => unpackTicks([run], 3))).toBeNull()
+      expect(pushesAtMost(1000, () => unpackTicks([[1, 0, 0], run], 3))).toBeNull()
+    }
+    // One past the room is refused; exactly the room is not.
+    expect(unpackTicks([[1, 0, 0], -3], 3)).toBeNull()
+    expect(unpackTicks([[1, 0, 0], -2], 3)).toEqual([[1, 0, 0], [0, 0, 0], [0, 0, 0]])
+    expect(unpackTicks([-3], 3)).toEqual([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+    // A run of none is still not a run.
+    expect(unpackTicks([0, -3], 3)).toBeNull()
+  })
+
+  it('refuses a face colour run longer than the faces left', () => {
+    for (const run of huge) {
+      expect(pushesAtMost(1000, () => unpackFaceColors([7, run], 12, BUILT_IN))).toBeNull()
+      expect(pushesAtMost(1000, () => unpackFaceColors([7, -5, 3, run], 12, BUILT_IN))).toBeNull()
+    }
+    expect(unpackFaceColors([7, -12], 12, BUILT_IN)).toBeNull()
+    expect(unpackFaceColors([7, -5, 3, -6], 12, BUILT_IN)).toBeNull()
+    expect(unpackFaceColors([7, -5, 3, -5], 12, BUILT_IN)).toEqual([7, 7, 7, 7, 7, 7, 3, 3, 3, 3, 3, 3])
+  })
+
+  it('rejects a whole payload whose runs do not fit, without expanding them', () => {
+    for (const run of huge) {
+      const ticks = { ...toPayload(tri), ticks: [run] }
+      expect(pushesAtMost(10_000, () => fromPayload(ticks, 'x'))).toBeNull()
+      const colours = { ...toPayload(tri), facecolors: [7, run] }
+      expect(pushesAtMost(10_000, () => fromPayload(colours, 'x'))).toBeNull()
+    }
+    // The same payloads with runs that fit still read.
+    expect(fromPayload({ ...toPayload(tri), ticks: [-3] }, 'x')).not.toBeNull()
+    expect(fromPayload({ ...toPayload(tri), facecolors: [7] }, 'x')?.facecolors).toHaveLength(1)
+  })
+})

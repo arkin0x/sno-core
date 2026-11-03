@@ -716,7 +716,8 @@ export function packFaceColors(indices: number[]): number[] {
 
 /**
  * Face colours read back, one index per face, or null when they do not fit
- * `count` faces or name a colour the palette does not have.
+ * `count` faces or name a colour the palette does not have. A run longer than
+ * the faces left is refused before it is expanded.
  *
  * The sign separates an index from a run, which works because an index is
  * never negative. It is the same trick `ticks` uses, and it is why a colour
@@ -734,8 +735,11 @@ export function unpackFaceColors(packed: unknown, count: number, palette: Palett
     if ((e as number) < 0) {
       // A run repeats the index before it, so the first entry cannot be one.
       if (out.length === 0) return null
+      // Each run must fit the room left in the declared count.
+      const run = -(e as number)
+      if (run > count - out.length) return null
       const prev = out[out.length - 1]
-      for (let i = 0; i < -(e as number); i++) out.push(prev)
+      for (let i = 0; i < run; i++) out.push(prev)
     } else {
       if ((e as number) >= palette.length) return null
       out.push(e as number)
@@ -774,7 +778,11 @@ export function expandFaceColors(s: ShardModel): ShardModel {
   return { ...s, vertices, faces, facecolors: undefined }
 }
 
-/** The ticks column read back, one triple per vertex, or null when it does not fit `count` vertices. */
+/**
+ * The ticks column read back, one triple per vertex, or null when it does not
+ * fit `count` vertices. A run longer than the vertices left is refused before
+ * it is expanded, as is a run of none.
+ */
 export function unpackTicks(packed: unknown, count: number): Array<[number, number, number]> | null {
   if (packed === undefined) return Array.from({ length: count }, () => [0, 0, 0])
   if (!Array.isArray(packed)) return null
@@ -782,6 +790,8 @@ export function unpackTicks(packed: unknown, count: number): Array<[number, numb
   for (const e of packed) {
     if (typeof e === 'number') {
       if (!Number.isInteger(e) || e >= 0) return null
+      // Held to the vertices left before it is expanded, as a face colour run is.
+      if (-e > count - out.length) return null
       for (let i = 0; i < -e; i++) out.push([0, 0, 0])
     } else if (Array.isArray(e) && e.length === 3 && e.every((t) => Number.isInteger(t) && t >= 0 && t < TICKS_PER_UNIT)) {
       out.push([e[0], e[1], e[2]])
