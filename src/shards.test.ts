@@ -862,12 +862,10 @@ describe('opacity (DECK-0003 §1.11)', () => {
 })
 
 describe('run lengths are checked before they are expanded', () => {
-  // A run is a count written by whoever published the object, so it is
-  // checked against the room left in the output before a single entry is
-  // made from it. These run `fn` with Array.prototype.push wrapped to throw
-  // past `limit` calls: an unpacker that expanded first would fill the heap
-  // long before its length check came round, and a synchronous loop cannot be
-  // stopped by a test timeout, so the guard is what makes that a fast failure.
+  // A run longer than the declared count is refused, and refused before any
+  // entry is made from it. These run `fn` with Array.prototype.push wrapped
+  // to throw past `limit` calls, so a refusal that came after expanding
+  // shows up as a failed test.
   const pushesAtMost = <T>(limit: number, fn: () => T): T => {
     const push = Array.prototype.push
     let n = 0
