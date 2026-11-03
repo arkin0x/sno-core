@@ -735,9 +735,7 @@ export function unpackFaceColors(packed: unknown, count: number, palette: Palett
     if ((e as number) < 0) {
       // A run repeats the index before it, so the first entry cannot be one.
       if (out.length === 0) return null
-      // A run is a count the publisher wrote, so it is held to the faces left
-      // before anything is made from it; expanding first and checking after
-      // would let one entry ask for any number of copies.
+      // Each run must fit the room left in the declared count.
       const run = -(e as number)
       if (run > count - out.length) return null
       const prev = out[out.length - 1]
