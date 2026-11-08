@@ -1,0 +1,30 @@
+/**
+ * The whole library, for a consumer that would rather name the package than
+ * the file. Either works: `sno-core` reaches everything through here, and
+ * `sno-core/shards` reaches one module, which is what both clients do, because
+ * an import that still says which module a name came from is the one thing a
+ * reader loses when a directory becomes a package.
+ */
+export * from './clip.js';
+export * from './feed.js';
+export * from './fingerprint.js';
+export * from './gltf.js';
+export { hsvToRgb, rgbToHsv, type Hsv } from './hsv.js';
+export * from './importFile.js';
+export * from './mesh.js';
+export * from './meshToShard.js';
+export * from './obj.js';
+export * from './orient.js';
+export * from './outline.js';
+export * from './parts.js';
+export * from './ply.js';
+export * from './pose.js';
+export * from './scale.js';
+export * from './shards.js';
+export * from './snoPalette.js';
+export * from './stamps.js';
+export * from './stl.js';
+export * from './triangulate.js';
+export * from './vox.js';
+export * from './winding.js';
+//# sourceMappingURL=index.d.ts.map

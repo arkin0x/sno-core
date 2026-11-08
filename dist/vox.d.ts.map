@@ -1,0 +1,1 @@
+{"version":3,"file":"vox.d.ts","sourceRoot":"","sources":["../src/vox.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;;;GAqBG;AAEH,OAAO,EAAuD,KAAK,KAAK,EAAE,KAAK,UAAU,EAAE,MAAM,WAAW,CAAA;AAE5G,2CAA2C;AAC3C,wBAAgB,YAAY,CAAC,KAAK,EAAE,UAAU,GAAG,OAAO,CAEvD;AA2CD,gFAAgF;AAChF,wBAAgB,QAAQ,CAAC,KAAK,EAAE,UAAU,EAAE,KAAK,EAAE,KAAK,GAAG,UAAU,CAyMpE"}

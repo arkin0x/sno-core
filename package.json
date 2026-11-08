@@ -1,6 +1,6 @@
 {
   "name": "sno-core",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "description": "The SNO shard format and the geometry around it: the wire payload, the 256-colour palette, the stamps, winding, outlines, triangulation, clipping, and importing 3D files (PLY, STL, OBJ, glTF, VOX) as shards. Shared by snocrash and ONOSENDAI.",
   "license": "MIT",
   "repository": "https://github.com/arkin0x/sno-core",
@@ -24,12 +24,12 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "check:dist": "npm run build:dist && git status --porcelain --untracked-files=all -- dist && test -z \"$(git status --porcelain --untracked-files=all -- dist)\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build",
-    "prepare": "npm run build"
+    "prepublishOnly": "npm run build:dist"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

@@ -132,10 +132,14 @@ A git dependency pinned to a tag:
 ```
 
 `npm` records the resolved commit in the lockfile, so `npm ci` installs exactly
-what was reviewed even if the tag is later moved. `prepare` builds `dist` at
-install time, which is why `typescript` is a runtime dependency rather than a
-dev one: npm installs a git dependency's `dependencies`, and `prepare` has to be
-able to run.
+what was reviewed even if the tag is later moved. `dist` is committed, so the
+install builds nothing: npm runs a full install of a git dependency
+(devDependencies and all) and its `prepare` only when its package.json has a
+`build`, `prepare`, `prepack`, `install`, `preinstall` or `postinstall` script,
+and this one has none of them (the build is `build:dist`). No `tsc`, no
+devDependencies; `typescript` is only a devDependency. That also fixes `npm i -g`
+of a package that depends on this one from git, whose nested `prepare` could
+not find `tsc`.
 
 Nothing is published to npm. The two consumers are known, the package is public,
 and a registry release is a second place to get the version wrong.
@@ -146,8 +150,13 @@ and a registry release is a second place to get the version wrong.
 npm install
 npm run typecheck
 npm test
-npm run build
+npm run build:dist   # rewrites dist/ from src/
+npm run check:dist   # rebuilds dist/; exits 1 unless the committed dist/ matches
 ```
+
+`dist/` is committed. Rebuild it and commit it with every change to `src/`;
+`check:dist` (and CI) fails when the two disagree. The build is reproducible:
+the same `src/` and the same locked `tsc` give the same bytes.
 
 A change here reaches a client when that client's `package.json` moves to a new
 tag and its lockfile is updated. Tag from `main` once the tests pass.
