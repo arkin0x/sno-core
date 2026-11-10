@@ -20,6 +20,7 @@ export * from './parts.js';
 export * from './ply.js';
 export * from './pose.js';
 export * from './scale.js';
+export * from './seeds.js';
 export * from './shards.js';
 export * from './snoPalette.js';
 export * from './stamps.js';
