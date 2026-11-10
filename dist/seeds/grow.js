@@ -119,11 +119,9 @@ export function growSymbols(dna, seed, clock, blockHash, options = {}) {
     const scale = seed.scale ?? 0;
     const age = seed.planted === null ? 0 : clock - seed.planted;
     const target = seed.planted === null ? 0 : generationAt(age, caps.generations);
-    const grownFor = { dnaText: dna.text, coord: seed.coord, planted: seed.planted, scale, symbolCap: caps.symbols };
+    const grownFor = grownForSeed(dna, seed);
     const f = options.from;
-    const resume = f !== undefined && f.generation <= target && f.grownFor.dnaText === grownFor.dnaText &&
-        f.grownFor.coord === grownFor.coord && f.grownFor.planted === grownFor.planted &&
-        f.grownFor.scale === grownFor.scale && f.grownFor.symbolCap === grownFor.symbolCap;
+    const resume = f !== undefined && f.generation <= target && sameGrowth(f.grownFor, grownFor);
     const env = resume ? f.env : envSlots(dna, seed.coord, scale);
     let str = resume ? f.str : dna.axiom.map((t) => ({ c: t.c, p: t.args.map((x) => x(env)), b: 0 }));
     let generation = resume ? f.generation : 0;
@@ -158,6 +156,26 @@ export function growSymbols(dna, seed, clock, blockHash, options = {}) {
     if (missingBlock !== undefined)
         grown.missingBlock = missingBlock;
     return grown;
+}
+function grownForSeed(dna, seed) {
+    return { dnaText: dna.text, coord: seed.coord, planted: seed.planted, scale: seed.scale ?? 0, symbolCap: (seed.caps ?? BASE_CAPS).symbols };
+}
+function sameGrowth(a, b) {
+    return a.dnaText === b.dnaText && a.coord === b.coord && a.planted === b.planted && a.scale === b.scale && a.symbolCap === b.symbolCap;
+}
+/** The generation the clock calls for, for this seed (§4.1): 0 while the planted height is not settled. */
+export function targetGeneration(seed, clock) {
+    return seed.planted === null ? 0 : generationAt(clock - seed.planted, (seed.caps ?? BASE_CAPS).generations);
+}
+/**
+ * True when a grown string can be drawn for this DNA and seed at this clock:
+ * it was grown for the same DNA, coordinate, planted height, scale and symbol
+ * cap, and is not past the generation the clock calls for. It may be behind
+ * it; `drawBloom` then says so. `drawBloom` refuses a string for which this is
+ * false, since it would draw another bloom.
+ */
+export function growthApplies(grown, dna, seed, clock) {
+    return sameGrowth(grown.grownFor, grownForSeed(dna, seed)) && grown.generation <= targetGeneration(seed, clock);
 }
 const RING = [[0, SEED_ONE], [-14189, -8192], [14189, -8192]];
 /** Draw a string with the turtle (§5.2, §5.3, §5.4) at an age in blocks. `env` is the seed's slots (`envSlots`). */
@@ -357,19 +375,25 @@ export function toBloomBuffers(geo) {
 }
 export function drawBloom(dna, grown, seed, clock, options = {}) {
     const caps = seed.caps ?? BASE_CAPS;
+    if (!sameGrowth(grown.grownFor, grownForSeed(dna, seed)))
+        throw new Error('drawBloom: the string was grown for another DNA or seed');
+    const target = targetGeneration(seed, clock);
+    if (grown.generation > target)
+        throw new Error('drawBloom: the string is at generation ' + grown.generation + ', past the ' + target + ' this clock calls for');
     const age = seed.planted === null ? 0 : clock - seed.planted;
     const geo = drawGeometry(dna, grown.str, Math.max(0, age), grown.env, caps.vertices);
     const bloom = {
         age,
         generation: grown.generation,
-        targetGeneration: grown.targetGeneration,
-        behind: !grown.complete,
+        targetGeneration: target,
+        behind: grown.generation < target,
         symbols: grown.str.length,
         weatherBlocks: grown.weatherBlocks,
     };
-    if (grown.stopped !== undefined)
+    // why it stopped, when growth stopped short and nothing has grown it on since
+    if (bloom.behind && grown.stopped !== undefined)
         bloom.stopped = grown.stopped;
-    if (grown.missingBlock !== undefined)
+    if (bloom.behind && grown.missingBlock !== undefined)
         bloom.missingBlock = grown.missingBlock;
     if (options.payload ?? true) {
         const sno = toBloomPayload(dna.name, geo, seed.scale ?? 0);
@@ -388,7 +412,9 @@ export function growBloom(dna, seed, clock, blockHash, options = {}) {
 }
 export function tryGrowBloom(dna, seed, clock, blockHash, options = {}) {
     try {
-        const d = typeof dna === 'string' ? parseDna(dna) : dna;
+        const d = typeof dna === 'string' ? parseDna(dna)
+            : 'rulesByHead' in dna ? dna
+                : parseDna(dna.text, { computed: dna.computed === true });
         return { ok: true, bloom: growBloom(d, seed, clock, blockHash, options) };
     }
     catch (e) {

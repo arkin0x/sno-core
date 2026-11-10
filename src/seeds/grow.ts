@@ -55,7 +55,7 @@ export interface GrownSymbols {
   str: BloomSymbol[]
   /** The generation reached. */
   generation: number
-  /** The generation the clock calls for. */
+  /** The generation the clock it was grown for calls for. `drawBloom` recomputes it for the clock it draws at. */
   targetGeneration: number
   /** True when `generation` is `targetGeneration`. */
   complete: boolean
@@ -239,11 +239,9 @@ export function growSymbols(dna: Dna, seed: SeedPlanting, clock: number, blockHa
   const scale = seed.scale ?? 0
   const age = seed.planted === null ? 0 : clock - seed.planted
   const target = seed.planted === null ? 0 : generationAt(age, caps.generations)
-  const grownFor = { dnaText: dna.text, coord: seed.coord, planted: seed.planted, scale, symbolCap: caps.symbols }
+  const grownFor = grownForSeed(dna, seed)
   const f = options.from
-  const resume = f !== undefined && f.generation <= target && f.grownFor.dnaText === grownFor.dnaText &&
-    f.grownFor.coord === grownFor.coord && f.grownFor.planted === grownFor.planted &&
-    f.grownFor.scale === grownFor.scale && f.grownFor.symbolCap === grownFor.symbolCap
+  const resume = f !== undefined && f.generation <= target && sameGrowth(f.grownFor, grownFor)
   const env = resume ? f.env : envSlots(dna, seed.coord, scale)
   let str: BloomSymbol[] = resume ? f.str : dna.axiom.map((t) => ({ c: t.c, p: t.args.map((x) => x(env)), b: 0 }))
   let generation = resume ? f.generation : 0
@@ -266,6 +264,30 @@ export function growSymbols(dna: Dna, seed: SeedPlanting, clock: number, blockHa
   if (stopped !== undefined) grown.stopped = stopped
   if (missingBlock !== undefined) grown.missingBlock = missingBlock
   return grown
+}
+
+function grownForSeed(dna: Dna, seed: SeedPlanting): GrownSymbols['grownFor'] {
+  return { dnaText: dna.text, coord: seed.coord, planted: seed.planted, scale: seed.scale ?? 0, symbolCap: (seed.caps ?? BASE_CAPS).symbols }
+}
+
+function sameGrowth(a: GrownSymbols['grownFor'], b: GrownSymbols['grownFor']): boolean {
+  return a.dnaText === b.dnaText && a.coord === b.coord && a.planted === b.planted && a.scale === b.scale && a.symbolCap === b.symbolCap
+}
+
+/** The generation the clock calls for, for this seed (§4.1): 0 while the planted height is not settled. */
+export function targetGeneration(seed: SeedPlanting, clock: number): number {
+  return seed.planted === null ? 0 : generationAt(clock - seed.planted, (seed.caps ?? BASE_CAPS).generations)
+}
+
+/**
+ * True when a grown string can be drawn for this DNA and seed at this clock:
+ * it was grown for the same DNA, coordinate, planted height, scale and symbol
+ * cap, and is not past the generation the clock calls for. It may be behind
+ * it; `drawBloom` then says so. `drawBloom` refuses a string for which this is
+ * false, since it would draw another bloom.
+ */
+export function growthApplies(grown: GrownSymbols, dna: Dna, seed: SeedPlanting, clock: number): boolean {
+  return sameGrowth(grown.grownFor, grownForSeed(dna, seed)) && grown.generation <= targetGeneration(seed, clock)
 }
 
 /** The geometry of a drawn string: positions in ticks, painted colors, faces. */
@@ -420,23 +442,32 @@ export function toBloomBuffers(geo: BloomGeometry): BloomBuffers {
  * Draw a grown string at the clock height. Without options: the payload, its
  * JSON and its hash. With `DrawOptions`: only the parts asked for, for
  * example `{ json: false, buffers: true }` in a worker that posts geometry.
+ *
+ * The target generation is the one this clock calls for, so a string cached
+ * at an earlier generation is drawn `behind` until it is grown on (with
+ * `growSymbols(..., { from })`). Throws when `growthApplies` is false: a
+ * string grown for another DNA or seed, or past this clock's generation.
  */
 export function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clock: number): Bloom
 export function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clock: number, options: DrawOptions): BloomParts
 export function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clock: number, options: DrawOptions = {}): BloomParts {
   const caps = seed.caps ?? BASE_CAPS
+  if (!sameGrowth(grown.grownFor, grownForSeed(dna, seed))) throw new Error('drawBloom: the string was grown for another DNA or seed')
+  const target = targetGeneration(seed, clock)
+  if (grown.generation > target) throw new Error('drawBloom: the string is at generation ' + grown.generation + ', past the ' + target + ' this clock calls for')
   const age = seed.planted === null ? 0 : clock - seed.planted
   const geo = drawGeometry(dna, grown.str, Math.max(0, age), grown.env, caps.vertices)
   const bloom: BloomParts = {
     age,
     generation: grown.generation,
-    targetGeneration: grown.targetGeneration,
-    behind: !grown.complete,
+    targetGeneration: target,
+    behind: grown.generation < target,
     symbols: grown.str.length,
     weatherBlocks: grown.weatherBlocks,
   }
-  if (grown.stopped !== undefined) bloom.stopped = grown.stopped
-  if (grown.missingBlock !== undefined) bloom.missingBlock = grown.missingBlock
+  // why it stopped, when growth stopped short and nothing has grown it on since
+  if (bloom.behind && grown.stopped !== undefined) bloom.stopped = grown.stopped
+  if (bloom.behind && grown.missingBlock !== undefined) bloom.missingBlock = grown.missingBlock
   if (options.payload ?? true) {
     const sno = toBloomPayload(dna.name, geo, seed.scale ?? 0)
     bloom.sno = sno
@@ -462,15 +493,23 @@ export function growBloom(dna: Dna, seed: SeedPlanting, clock: number, blockHash
 }
 
 /**
+ * A DNA as a worker receives it: a written DNA's text, or `{ text, computed:
+ * true }` for a mixed child's computed text, which may pass 8,192 bytes (§3.1).
+ */
+export type DnaSource = Dna | string | { text: string; computed?: boolean }
+
+/**
  * `growBloom` for a worker: takes the DNA as its text (or parsed), and returns
  * an invalid text, an axiom over the symbol cap or a malformed coordinate or
  * scale as `{ ok: false, error }` instead of throwing.
  */
-export function tryGrowBloom(dna: Dna | string, seed: SeedPlanting, clock: number, blockHash: BlockHashSource): { ok: true; bloom: Bloom } | { ok: false; error: string }
-export function tryGrowBloom(dna: Dna | string, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions): { ok: true; bloom: BloomParts } | { ok: false; error: string }
-export function tryGrowBloom(dna: Dna | string, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions = {}): { ok: true; bloom: BloomParts } | { ok: false; error: string } {
+export function tryGrowBloom(dna: DnaSource, seed: SeedPlanting, clock: number, blockHash: BlockHashSource): { ok: true; bloom: Bloom } | { ok: false; error: string }
+export function tryGrowBloom(dna: DnaSource, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions): { ok: true; bloom: BloomParts } | { ok: false; error: string }
+export function tryGrowBloom(dna: DnaSource, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions = {}): { ok: true; bloom: BloomParts } | { ok: false; error: string } {
   try {
-    const d = typeof dna === 'string' ? parseDna(dna) : dna
+    const d = typeof dna === 'string' ? parseDna(dna)
+      : 'rulesByHead' in dna ? dna
+      : parseDna(dna.text, { computed: dna.computed === true })
     return { ok: true, bloom: growBloom(d, seed, clock, blockHash, options) }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }

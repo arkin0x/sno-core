@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   bloomEnv, bloomTransferList, capsFromTags, drawBloom, effectivePlantedHeight, GENESIS_TIME, growBloom, growSymbols,
-  highestAtOrBelow, mixDna, mixSchedule, parseChildText, parseDna, readMixedDna, readSeed, SeedoError, tryGrowBloom,
+  growthApplies, highestAtOrBelow, mixDna, mixSchedule, parseChildText, parseDna, readMixedDna, readSeed, SeedoError, tryGrowBloom,
   tryParseDna, worstCaseSteps,
 } from '../seeds.js'
 import { hasLoneSurrogate } from './parse.js'
@@ -242,6 +242,45 @@ describe('drawing for a worker', () => {
     const r = mixDna(mother, mother, 1)
     if (r.refused) throw new Error(r.refused)
     expect(parseChildText(r.text).name).toBe('mom x mom')
+  })
+})
+
+describe('drawing a cached string at a later clock (the re-review\'s stale scenarios)', () => {
+  const seed = { coord: coordA, planted: 970400, caps: CAPS }
+  const c1 = 970400 + 10 * 144 + 5, c2 = 970400 + 12 * 144 + 5
+  it('a gen-10 string drawn at a clock that calls for gen 12 is behind, and growing it on catches up', () => {
+    const cached = growSymbols(fiddlehead, seed, c1, blockHash)
+    const stale = drawBloom(fiddlehead, cached, seed, c2)
+    const right = growBloom(fiddlehead, seed, c2, blockHash)
+    expect(stale).toMatchObject({ generation: 10, targetGeneration: 12, behind: true })
+    expect(stale.sha256).not.toBe(right.sha256)
+    expect(right).toMatchObject({ generation: 12, targetGeneration: 12, behind: false })
+    const caught = drawBloom(fiddlehead, growSymbols(fiddlehead, seed, c2, blockHash, { from: cached }), seed, c2)
+    expect(caught.behind).toBe(false)
+    expect(caught.sha256).toBe(right.sha256)
+  })
+  it('a string grown for another seed is refused', () => {
+    const other = { ...seed, coord: 'ab'.repeat(32) }
+    const foreign = growSymbols(fiddlehead, other, c2, blockHash)
+    expect(growthApplies(foreign, fiddlehead, seed, c2)).toBe(false)
+    expect(() => drawBloom(fiddlehead, foreign, seed, c2)).toThrow('grown for another DNA or seed')
+    for (const changed of [{ ...seed, planted: 970401 }, { ...seed, scale: 1 }, { ...seed, caps: { ...CAPS, symbols: 5000 } }]) {
+      expect(() => drawBloom(fiddlehead, growSymbols(fiddlehead, changed, c2, blockHash), seed, c2)).toThrow()
+    }
+  })
+  it('a string past the clock\'s generation is refused', () => {
+    const ahead = growSymbols(fiddlehead, seed, c2, blockHash)
+    expect(growthApplies(ahead, fiddlehead, seed, c1)).toBe(false)
+    expect(() => drawBloom(fiddlehead, ahead, seed, c1)).toThrow('past the 10 this clock calls for')
+  })
+  it('tryGrowBloom grows a mixed child over 8,192 bytes from { text, computed }', () => {
+    const mom = parseDna('dna mom\nnote ' + 'x'.repeat(8100) + '\naxiom F')
+    const child = mixDna(mom, mom, 1)
+    if (child.refused) throw new Error(child.refused)
+    expect(new TextEncoder().encode(child.text).length).toBeGreaterThan(8192)
+    expect(tryGrowBloom(child.text, seed, c2, blockHash)).toEqual({ ok: false, error: 'the text is longer than 8192 bytes' })
+    const r = tryGrowBloom({ text: child.text, computed: true }, seed, c2, blockHash)
+    expect(r.ok && r.bloom.sno.name).toBe('mom x mom')
   })
 })
 

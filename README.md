@@ -135,8 +135,8 @@ hashes and header times are functions you pass in. Grow blooms in a Web Worker
 **Across the worker boundary, post the DNA's text and parse it in the worker.**
 A parsed `Dna` holds compiled functions and cannot be cloned. `tryGrowBloom`
 takes the text and returns `{ ok: false, error }` instead of throwing. A mixed
-child's computed text can pass 8,192 bytes; a cached one is read back with
-`parseChildText`, not `parseDna`.
+child's computed text can pass 8,192 bytes: post it as `{ text, computed:
+true }`, and read a cached one back with `parseChildText`, not `parseDna`.
 
 ```ts
 import {
@@ -170,8 +170,11 @@ const bloom = growBloom(dna, {
   leaves the planted height `pending`, never stepped over (§4.2).
 - A generation changes once a day of blocks. Cache `growSymbols(...)` per
   generation and call `drawBloom(...)` each block; together they are
-  `growBloom`. When the clock moves on, `growSymbols(..., { from: cached })`
-  continues from the cached generation.
+  `growBloom`. `drawBloom` judges the string against the clock it draws at:
+  a string cached at an earlier generation is drawn `behind` until
+  `growSymbols(..., { from: cached })` grows it on, and one grown for another
+  DNA or seed, or past the clock's generation, is refused (check with
+  `growthApplies`).
 - On a phone, bound each call: `{ maxSteps }` stops before a generation that
   would pass the budget (every call still grows at least one), and
   `{ signal }` stops at the next generation once aborted. Either returns a

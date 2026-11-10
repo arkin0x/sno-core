@@ -46,7 +46,7 @@ export interface GrownSymbols {
     str: BloomSymbol[];
     /** The generation reached. */
     generation: number;
-    /** The generation the clock calls for. */
+    /** The generation the clock it was grown for calls for. `drawBloom` recomputes it for the clock it draws at. */
     targetGeneration: number;
     /** True when `generation` is `targetGeneration`. */
     complete: boolean;
@@ -167,6 +167,16 @@ export declare function bloomEnv(dna: Dna, coord: string, scale?: number): Recor
  * abort (`GrowOptions`). Continue later with `{ from: grown }`.
  */
 export declare function growSymbols(dna: Dna, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options?: GrowOptions): GrownSymbols;
+/** The generation the clock calls for, for this seed (§4.1): 0 while the planted height is not settled. */
+export declare function targetGeneration(seed: SeedPlanting, clock: number): number;
+/**
+ * True when a grown string can be drawn for this DNA and seed at this clock:
+ * it was grown for the same DNA, coordinate, planted height, scale and symbol
+ * cap, and is not past the generation the clock calls for. It may be behind
+ * it; `drawBloom` then says so. `drawBloom` refuses a string for which this is
+ * false, since it would draw another bloom.
+ */
+export declare function growthApplies(grown: GrownSymbols, dna: Dna, seed: SeedPlanting, clock: number): boolean;
 /** The geometry of a drawn string: positions in ticks, painted colors, faces. */
 export interface BloomGeometry {
     /** x, y, z in ticks, three numbers per vertex. */
@@ -184,6 +194,11 @@ export declare function toBloomBuffers(geo: BloomGeometry): BloomBuffers;
  * Draw a grown string at the clock height. Without options: the payload, its
  * JSON and its hash. With `DrawOptions`: only the parts asked for, for
  * example `{ json: false, buffers: true }` in a worker that posts geometry.
+ *
+ * The target generation is the one this clock calls for, so a string cached
+ * at an earlier generation is drawn `behind` until it is grown on (with
+ * `growSymbols(..., { from })`). Throws when `growthApplies` is false: a
+ * string grown for another DNA or seed, or past this clock's generation.
  */
 export declare function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clock: number): Bloom;
 export declare function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clock: number, options: DrawOptions): BloomParts;
@@ -196,18 +211,26 @@ export declare function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlant
 export declare function growBloom(dna: Dna, seed: SeedPlanting, clock: number, blockHash: BlockHashSource): Bloom;
 export declare function growBloom(dna: Dna, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions): BloomParts;
 /**
+ * A DNA as a worker receives it: a written DNA's text, or `{ text, computed:
+ * true }` for a mixed child's computed text, which may pass 8,192 bytes (§3.1).
+ */
+export type DnaSource = Dna | string | {
+    text: string;
+    computed?: boolean;
+};
+/**
  * `growBloom` for a worker: takes the DNA as its text (or parsed), and returns
  * an invalid text, an axiom over the symbol cap or a malformed coordinate or
  * scale as `{ ok: false, error }` instead of throwing.
  */
-export declare function tryGrowBloom(dna: Dna | string, seed: SeedPlanting, clock: number, blockHash: BlockHashSource): {
+export declare function tryGrowBloom(dna: DnaSource, seed: SeedPlanting, clock: number, blockHash: BlockHashSource): {
     ok: true;
     bloom: Bloom;
 } | {
     ok: false;
     error: string;
 };
-export declare function tryGrowBloom(dna: Dna | string, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions): {
+export declare function tryGrowBloom(dna: DnaSource, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions): {
     ok: true;
     bloom: BloomParts;
 } | {
