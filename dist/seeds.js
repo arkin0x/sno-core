@@ -7,14 +7,15 @@
  * against every section of its vectors.
  *
  * No DOM and no network: block hashes and header times come from the caller.
- * It runs in a Web Worker, where a client SHOULD grow blooms (§12, Compute).
+ * It runs in a Web Worker, where a client SHOULD grow blooms (§12, Compute):
+ * post the DNA's text, not a parsed Dna, and parse it in the worker.
  */
 export * from './seeds/constants.js';
 export { sha256Hex } from './seeds/hash.js';
 export { isin, icos, isqrt, lowbias32, weatherWord, generationRoll, symbolRoll } from './seeds/fixed.js';
 export { coordHexToXyz, xyzToCoordHex, terroir } from './seeds/terroir.js';
 export { compileExpr, SeedoError } from './seeds/expr.js';
-export { parseDna, tryParseDna, expressGene } from './seeds/parse.js';
+export { parseDna, parseChildText, tryParseDna, expressGene } from './seeds/parse.js';
 export * from './seeds/clock.js';
 export * from './seeds/grow.js';
 export * from './seeds/mix.js';

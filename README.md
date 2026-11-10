@@ -129,7 +129,14 @@ node_modules and hands them to Node.
 `sno-core/seeds` is the one implementation of DECK-0008 the clients share, so
 that every reader grows the same bloom. It has no DOM and no network: block
 hashes and header times are functions you pass in. Grow blooms in a Web Worker
-(§12, Compute); the module runs there unchanged.
+(§12, Compute); the module runs there unchanged, Safari before 16.4 included
+(it uses no regular-expression lookbehind).
+
+**Across the worker boundary, post the DNA's text and parse it in the worker.**
+A parsed `Dna` holds compiled functions and cannot be cloned. `tryGrowBloom`
+takes the text and returns `{ ok: false, error }` instead of throwing. A mixed
+child's computed text can pass 8,192 bytes; a cached one is read back with
+`parseChildText`, not `parseDna`.
 
 ```ts
 import {
@@ -156,14 +163,29 @@ const bloom = growBloom(dna, {
 - `blockHash(height)` returns 64 hex in the order block explorers display it.
   When it returns nothing for a driving block, the bloom is drawn at the last
   generation it could compute, with `behind: true` and `missingBlock` (§4.1).
+  A bloom that is behind is still drawn at the clock's age, so every symbol of
+  the generations it reached is fully grown; only the later rewrites are
+  missing.
 - `headerTime(height)` returns the header's `time` field. A missing header
   leaves the planted height `pending`, never stepped over (§4.2).
 - A generation changes once a day of blocks. Cache `growSymbols(...)` per
   generation and call `drawBloom(...)` each block; together they are
-  `growBloom`.
+  `growBloom`. When the clock moves on, `growSymbols(..., { from: cached })`
+  continues from the cached generation.
+- On a phone, bound each call: `{ maxSteps }` stops before a generation that
+  would pass the budget (every call still grows at least one), and
+  `{ signal }` stops at the next generation once aborted. Either returns a
+  partial result with `stopped` set; resume with `{ from }`.
+  `worstCaseSteps(caps)` is the most a DNA's caps allow (generations times
+  symbols), for deciding what to grow at all.
+- `drawBloom(..., { json: false })` skips the payload's JSON and SHA-256 (a
+  stringify and a hash of up to megabytes); `{ buffers: true }` adds the
+  geometry as typed arrays, posted with `bloomTransferList(buffers)` as the
+  transfer list.
 - Mixing: `readMixedDna` checks a mixed DNA's tags and work (§8.1);
-  `mixSchedule` says when it resolves (anchor check, settling, the 36-block
-  delay, depth, parents resolved first); `mixWord(outcome
+  `mixSchedule` says when it resolves (the anchor checked against your
+  `blockHash`, as §6.2 requires, settling, the 36-block delay, depth, parents
+  resolved first); `mixWord(outcome
   hash, commit id)` and `mixDna(mother, father, word, { name, hybrid })` give
   the child and its exact text. A preview may pass any 32-bit word (§6.8).
 - Errors in a DNA's text are `SeedoError`, with the reference interpreter's
@@ -176,8 +198,8 @@ check:seeds-vectors`). `npm run bench:seeds`, after `npm run build:dist`,
 times growth, and the reference beside it when the checkout is there.
 
 Where the DECK and its reference interpreter disagree, this follows the DECK:
-a comment is removed from its first `#` whatever follows it, a CR or U+2028
-included (§3.1); a mixed child's computed text is not held to 8,192 bytes
+a comment is removed from its first `#` whatever follows it, a CR, U+2028 or
+U+2029 included (§3.1); a mixed child's computed text is not held to 8,192 bytes
 (§3.1); every name, `__proto__` included, is an ordinary name; and a missing
 block or header is reported rather than thrown (§4.1, §4.2). No vector reaches
 any of these.

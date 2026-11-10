@@ -5,9 +5,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
-  bloomEnv, capsFromTags, drawBloom, effectivePlantedHeight, growBloom, growSymbols, mixDna, mixSchedule,
-  parseDna, readMixedDna, readSeed, SeedoError, tryParseDna,
+  bloomEnv, bloomTransferList, capsFromTags, drawBloom, effectivePlantedHeight, GENESIS_TIME, growBloom, growSymbols,
+  highestAtOrBelow, mixDna, mixSchedule, parseChildText, parseDna, readMixedDna, readSeed, SeedoError, tryGrowBloom,
+  tryParseDna, worstCaseSteps,
 } from '../seeds.js'
+import { hasLoneSurrogate } from './parse.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const here = dirname(fileURLToPath(import.meta.url))
@@ -26,8 +28,9 @@ describe('comments (§3.1): everything from the first # is removed, whatever it 
   })
   it('a CR or a line separator inside a comment', () => {
     expect(parseDna('dna x\nangle 8 # a\rb\naxiom F').angle).toBe(8)
-    expect(parseDna('dna x\nangle 8 # a b\naxiom F').angle).toBe(8)
-    expect(parseDna('dna x # a b\naxiom F').name).toBe('x')
+    expect(parseDna('dna x\nangle 8 # a\u2028b\naxiom F').angle).toBe(8)
+    expect(parseDna('dna x\nangle 8 # a\u2029b\naxiom F').angle).toBe(8)
+    expect(parseDna('dna x # a\u2028b\naxiom F').name).toBe('x')
   })
   it('a control character outside the comment is still refused', () => {
     expect(tryParseDna('dna x\nangle\v8\naxiom F')).toEqual({ ok: false, error: 'line 2: a control character' })
@@ -114,6 +117,11 @@ describe('mixSchedule', () => {
     const bad = { ...m.event, tags: m.event.tags.map((t: string[]) => t[0] === 'block' ? ['block', '0970500', t[2]] : t) }
     expect(readMixedDna(bad).ok).toBe(false)
   })
+  it('readMixedDna uses the first name tag', () => {
+    const two = { ...m.event, tags: [...m.event.tags, ['name', 'first'], ['name', 'kid -> F']] }
+    const r = readMixedDna({ ...two, id: m.event.id })
+    expect(r.ok && r.mix.name).toBe('first')
+  })
   it('a mixed parent whose commit has not settled keeps the child pending', () => {
     expect(mixSchedule({ ...commit, parentOutcomeHeights: [null] }, m.readable_at_clock, headerTime, blockHash).state).toBe('pending')
   })
@@ -133,10 +141,123 @@ describe('tags', () => {
     const swap = (k: string, v: string): any => ({ ...good, tags: good.tags.map((t: string[]) => t[0] === k ? [k, v] : t) })
     expect(readSeed(good).ok).toBe(true)
     expect(readSeed(without('C'))).toEqual({ ok: false, reason: 'no C tag' })
+    expect(readSeed(swap('C', coordA.toUpperCase()))).toEqual({ ok: false, reason: 'C is not 64 lowercase hex' })
+    expect(readSeed(swap('C', coordA.slice(2)))).toEqual({ ok: false, reason: 'C is not 64 lowercase hex' })
     expect(readSeed(without('nonce'))).toEqual({ ok: false, reason: 'no nonce tag' })
     expect(readSeed(swap('dna', 'ABC'))).toEqual({ ok: false, reason: 'the dna tag is not 64 hex' })
     expect(readSeed(swap('planted', '0970524'))).toEqual({ ok: false, reason: 'planted is not a decimal' })
     expect(readSeed({ ...good, tags: [...good.tags, ['scale', '85']] })).toEqual({ ok: false, reason: 'scale is not a decimal from 0 to 84' })
+  })
+})
+
+describe('finding E and F far below the clock, or in a store of recent headers', () => {
+  // header times 600 s apart with a deterministic wobble of up to 6 minutes either way, which keeps
+  // every header time above the MTP before it, as consensus requires
+  const time = (h: number): number => GENESIS_TIME + 600 * h + (((h * 7919) % 13) - 6) * 60
+  // the definition: the highest height at or below the clock whose header time is at most t
+  const brute = (t: number, clock: number, from = 0): number => { for (let h = clock; h >= from; h--) if (time(h) <= t) return h; return -1 }
+  it('an answer near 400,000 with the clock at 975,000', () => {
+    const t = time(400000)
+    expect(highestAtOrBelow(t, time, 975000)).toBe(brute(t, 975000))
+    const created = t + 7200
+    const eff = effectivePlantedHeight(400000, created, 975000, time)
+    expect(eff.state).toBe('settled')
+    if (eff.state === 'settled') expect(eff.E).toBe(brute(created - 7200, 975000))
+  })
+  it('an answer in the lowest blocks, where only blocks 0 to 10 qualify', () => {
+    expect(highestAtOrBelow(time(3), time, 5000)).toBe(brute(time(3), 5000))
+    expect(highestAtOrBelow(GENESIS_TIME, time, 5000)).toBe(brute(GENESIS_TIME, 5000))
+  })
+  it('a store that starts at S: clock S+1100, answer S+40, no header below what the walk needs', () => {
+    const S = 900000
+    const asked: number[] = []
+    const store = (h: number): number | undefined => { asked.push(h); return h >= S ? time(h) : undefined }
+    const t = time(S + 40)
+    expect(highestAtOrBelow(t, store, S + 1100)).toBe(brute(t, S + 1100, S))
+    const eff = effectivePlantedHeight(S + 40, t + 7200, S + 1100, store)
+    expect(eff.state).toBe('settled')
+  })
+})
+
+describe('the phone budget: resume, steps, abort (§12, Compute)', () => {
+  const seed = { coord: coordA, planted: 970400, caps: CAPS }
+  it('worstCaseSteps is generations times symbols', () => {
+    expect(worstCaseSteps(CAPS)).toBe(40 * 6000)
+    expect(worstCaseSteps()).toBe(32 * 2048)
+  })
+  it('growing in small budgets and resuming reaches the same bloom', () => {
+    let grown = growSymbols(fiddlehead, seed, day30.clock, blockHash, { maxSteps: 2000 })
+    expect(grown.stopped).toBe('budget')
+    expect(grown.complete).toBe(false)
+    let calls = 1
+    while (!grown.complete) { grown = growSymbols(fiddlehead, seed, day30.clock, blockHash, { from: grown, maxSteps: 2000 }); calls++ }
+    expect(calls).toBeGreaterThan(2)
+    expect(drawBloom(fiddlehead, grown, seed, day30.clock).sha256).toBe(day30.sno_sha256)
+    expect(grown.weatherBlocks).toEqual(day30.weather_blocks)
+  })
+  it('a cached generation resumes to a later clock', () => {
+    const day10 = growSymbols(fiddlehead, seed, 970400 + 10 * 144, blockHash)
+    const later = growSymbols(fiddlehead, seed, day30.clock, blockHash, { from: day10 })
+    const full = growSymbols(fiddlehead, seed, day30.clock, blockHash)
+    expect(later.steps).toBeLessThan(full.steps)
+    expect(drawBloom(fiddlehead, later, seed, day30.clock).sha256).toBe(day30.sno_sha256)
+  })
+  it('a cached string for another seed is not resumed from', () => {
+    const elsewhere = growSymbols(fiddlehead, { ...seed, coord: V.growth.cases.find((c: any) => c.what.startsWith('another place')).coord }, day30.clock, blockHash)
+    const g = growSymbols(fiddlehead, seed, day30.clock, blockHash, { from: elsewhere })
+    expect(drawBloom(fiddlehead, g, seed, day30.clock).sha256).toBe(day30.sno_sha256)
+  })
+  it('an aborted signal stops before the next generation', () => {
+    const g = growSymbols(fiddlehead, seed, day30.clock, blockHash, { signal: { aborted: true } })
+    expect(g).toMatchObject({ generation: 0, stopped: 'aborted', complete: false, steps: 0 })
+    expect(drawBloom(fiddlehead, g, seed, day30.clock).behind).toBe(true)
+  })
+})
+
+describe('drawing for a worker', () => {
+  const seed = { coord: coordA, planted: 970400, caps: CAPS }
+  it('json and its hash are optional; buffers carry the same geometry', () => {
+    const grown = growSymbols(fiddlehead, seed, day30.clock, blockHash)
+    const parts = drawBloom(fiddlehead, grown, seed, day30.clock, { json: false, buffers: true })
+    expect(parts.json).toBeUndefined()
+    expect(parts.sha256).toBeUndefined()
+    const sno = parts.sno!, b = parts.buffers!
+    expect(b.positions.length).toBe(sno.vertices.length * 3)
+    expect(Array.from(b.colors)).toEqual(sno.colors)
+    expect(Array.from(b.faces)).toEqual(sno.faces.flat())
+    expect(Array.from(b.positions, (t) => Math.floor(t / 120))).toEqual(sno.vertices.flat())
+    expect(bloomTransferList(b)).toHaveLength(3)
+    const none = drawBloom(fiddlehead, grown, seed, day30.clock, { payload: false })
+    expect(none.sno).toBeUndefined()
+    expect(none.generation).toBe(30)
+  })
+  it('tryGrowBloom takes the text and returns errors', () => {
+    const ok = tryGrowBloom(V.growth.dnas.fiddlehead, seed, day30.clock, blockHash)
+    expect(ok.ok && ok.bloom.sha256).toBe(day30.sno_sha256)
+    expect(tryGrowBloom('dna x', seed, day30.clock, blockHash)).toEqual({ ok: false, error: 'no axiom' })
+    expect(tryGrowBloom(fiddlehead, { ...seed, coord: 'zz' }, day30.clock, blockHash).ok).toBe(false)
+  })
+  it('a cached child text over 8 KB parses with parseChildText', () => {
+    const mother = parseDna('dna mom\nnote ' + 'x'.repeat(8100) + '\naxiom F')
+    const r = mixDna(mother, mother, 1)
+    if (r.refused) throw new Error(r.refused)
+    expect(parseChildText(r.text).name).toBe('mom x mom')
+  })
+})
+
+describe('unpaired surrogates, without a lookbehind', () => {
+  it('finds lone high and low surrogates and passes pairs', () => {
+    expect(hasLoneSurrogate('a\ud83d\ude00b')).toBe(false)
+    expect(hasLoneSurrogate('\ud83d')).toBe(true)
+    expect(hasLoneSurrogate('x\ude00')).toBe(true)
+    expect(hasLoneSurrogate('\ud83d\ud83d\ude00')).toBe(true)
+    expect(hasLoneSurrogate('\ude00\ud83d')).toBe(true)
+    expect(hasLoneSurrogate('é')).toBe(false)
+  })
+  it('the module has no lookbehind (Safari before 16.4 cannot compile one)', () => {
+    for (const f of readdirSync(here).filter((x) => x.endsWith('.ts') && !x.endsWith('.test.ts'))) {
+      expect(readFileSync(join(here, f), 'utf8'), f).not.toMatch(/\(\?<[=!]/)
+    }
   })
 })
 

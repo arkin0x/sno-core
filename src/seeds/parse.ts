@@ -4,7 +4,7 @@
  * any rule throws SeedoError, with the reference interpreter's message.
  */
 import { SEEDO_BUILTINS, SEEDO_KEYWORDS, SEEDO_LIMITS, SEEDO_RESERVED, SEEDO_REVISION, STANDARD_GENES } from './constants.js'
-import { compileExpr, SeedoError, trimWS, WS, type SeedExpr } from './expr.js'
+import { compileExpr, SeedoError, trimWS, WS, type SeedExpr, type SeedScope } from './expr.js'
 
 /** One allele of a gene: its value and whether it is dominant (§3.3). */
 export interface Allele {
@@ -36,6 +36,8 @@ export interface Rule {
   /** The head: a letter or a turtle character. */
   c: string
   params: string[]
+  /** The slot of each parameter. Every rule's parameters share the slots after the DNA's names. */
+  paramSlots: number[]
   cond: SeedExpr | null
   chance: SeedExpr | null
   succ: SymbolTemplate[]
@@ -44,6 +46,7 @@ export interface Rule {
 /** A `let` line (§3.5). */
 export interface Let {
   name: string
+  slot: number
   fn: SeedExpr
 }
 
@@ -73,12 +76,17 @@ export interface Dna {
   rulesByHead: ReadonlyMap<string, Rule[]>
   /** Equal for two DNAs exactly when they are of one species (§3.9). */
   speciesKey: string
+  /** The slot of every name: built-ins, standard genes, the text's genes and lets (§3.4). */
+  slots: ReadonlyMap<string, number>
+  /** The length of an environment: every name's slot, then four for rule parameters. */
+  slotCount: number
 }
 
 export interface ParseDnaOptions {
   /**
    * The text is a mixed DNA's computed child text (§6.6), which the 8,192-byte
-   * limit does not bound (§3.1). A written DNA's text always is.
+   * limit does not bound (§3.1). A written DNA's text always is. A child text
+   * cached and read again goes through `parseChildText`, which sets this.
    */
   computed?: boolean
 }
@@ -86,7 +94,6 @@ export interface ParseDnaOptions {
 const TURTLE = "+-&^\\/|[]!'"
 const LETTER_RE = /^[A-Za-z]$/
 const NAME_RE = /^[A-Za-z_][A-Za-z_0-9]*$/
-const SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
 const CONTROL_RE = /[\x00-\x08\x0a-\x1f\x7f-\x9f]/
 const PRINTABLE_RE = /^[\x20-\x7e\t]*$/
 const SPLIT_WS = new RegExp(WS + '+')
@@ -95,15 +102,30 @@ const STD_NAMES = STANDARD_GENES.map((g) => g.name as string)
 export const isLetter = (ch: string): boolean => LETTER_RE.test(ch)
 export const isSymbolChar = (ch: string): boolean => isLetter(ch) || TURTLE.includes(ch)
 
-/** True when a string holds an unpaired surrogate, which §3.1 refuses. */
-export const hasLoneSurrogate = (s: string): boolean => SURROGATE_RE.test(s)
+/**
+ * True when a string holds an unpaired surrogate, which §3.1 refuses. A loop
+ * rather than a regular expression with a lookbehind, which Safari before 16.4
+ * cannot even compile.
+ */
+export function hasLoneSurrogate(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const d = i + 1 < s.length ? s.charCodeAt(i + 1) : 0
+      if (d >= 0xdc00 && d <= 0xdfff) { i++; continue }
+      return true
+    }
+    if (c >= 0xdc00 && c <= 0xdfff) return true
+  }
+  return false
+}
 
 /** The first `n` code points of a string. */
 export const cutCodePoints = (s: string, n: number): string => [...s].slice(0, n).join('')
 
 /**
  * A line with its comment removed: everything from the first `#` to the end,
- * whatever it holds (§3.1). The reference's `/#.*$/` stops at a CR or U+2028
+ * whatever it holds (§3.1). The reference's `/#.*$/` stops at a CR, U+2028 or U+2029
  * in the comment and then removes nothing; the DECK's text is followed here.
  */
 export function stripComment(raw: string): string {
@@ -128,7 +150,7 @@ function splitTop(s: string): string[] {
   return out
 }
 
-function parseString(src: string, known: ReadonlySet<string>, where: string, maxSymbols = Infinity): SymbolTemplate[] {
+function parseString(src: string, known: SeedScope, where: string, maxSymbols = Infinity): SymbolTemplate[] {
   const out: SymbolTemplate[] = []
   let i = 0
   while (i < src.length) {
@@ -173,6 +195,9 @@ export function parseDna(text: string, options: ParseDnaOptions = {}): Dna {
   let genes: Gene[] = []
   const lets: Let[] = []
   const names = new Set<string>([...SEEDO_BUILTINS, ...STD_NAMES])
+  // every name in use gets a slot: built-ins and standard genes first, then genes and lets as declared
+  const slots = new Map<string, number>([...names].map((n, i) => [n, i]))
+  const addName = (n: string): void => { names.add(n); if (!slots.has(n)) slots.set(n, slots.size) }
   const declared = new Set<string>()
   let axiomSrc: string | null = null, axiomLine = ''
   const ruleSrc: Array<[string, string]> = []
@@ -217,15 +242,16 @@ export function parseDna(text: string, options: ParseDnaOptions = {}): Dna {
       }
       const cl = (v: number): number => Math.max(lo, Math.min(hi, v))
       genes.push({ name: m[1], a: { value: cl(nums[0]), dominant: m[3] === '!' }, b: { value: cl(nums[1]), dominant: m[5] === '!' }, lo, hi, standard: !!std, implicit: false })
-      names.add(m[1])
+      addName(m[1])
     }
     else if (kw === 'let') {
       const m = new RegExp('^([A-Za-z_][A-Za-z_0-9]*)' + WS + '*=' + WS + '*(.+)$').exec(rest)
       if (!m) throw new SeedoError(where + ': let is "let name = expression"')
       if (names.has(m[1]) || SEEDO_RESERVED.includes(m[1])) throw new SeedoError(where + ': name "' + m[1] + '" is taken')
-      const inScope = new Set([...names].filter((x) => x !== 'w' && x !== 'W' && x !== 'g'))
-      lets.push({ name: m[1], fn: compileExpr(m[2], inScope, where) })
-      names.add(m[1])
+      const inScope = new Map([...slots].filter(([x]) => x !== 'w' && x !== 'W' && x !== 'g'))
+      const fn = compileExpr(m[2], inScope, where)
+      addName(m[1])
+      lets.push({ name: m[1], slot: slots.get(m[1]) as number, fn })
     }
     else if (kw === 'axiom') { once('axiom'); axiomSrc = rest; axiomLine = where }
     else if (kw === 'seedo') {
@@ -240,7 +266,8 @@ export function parseDna(text: string, options: ParseDnaOptions = {}): Dna {
   const stdGenes = STANDARD_GENES.map((x): Gene => genes.find((g) => g.name === x.name) ??
     { name: x.name, a: { value: x.def, dominant: false }, b: { value: x.def, dominant: false }, lo: x.lo, hi: x.hi, standard: true, implicit: true })
   genes = stdGenes.concat(genes.filter((g) => !g.standard))
-  const axiom = parseString(axiomSrc, names, axiomLine)
+  const axiom = parseString(axiomSrc, slots, axiomLine)
+  const paramBase = slots.size
   if (ruleSrc.length > SEEDO_LIMITS.rules) throw new SeedoError('more than ' + SEEDO_LIMITS.rules + ' rules')
   const rules: Rule[] = []
   const rulesByHead = new Map<string, Rule[]>()
@@ -254,14 +281,15 @@ export function parseDna(text: string, options: ParseDnaOptions = {}): Dna {
     for (const p of params) if (!NAME_RE.test(p) || names.has(p) || SEEDO_RESERVED.includes(p)) throw new SeedoError(where + ': parameter "' + p + '" is not a free name')
     if (new Set(params).size !== params.length) throw new SeedoError(where + ': parameter names repeat')
     if (params.length > SEEDO_LIMITS.params) throw new SeedoError(where + ': more than ' + SEEDO_LIMITS.params + ' parameters')
-    const known = new Set([...names, ...params])
+    const known = new Map(slots)
+    params.forEach((q, k) => known.set(q, paramBase + k))
     let rest = trimWS(m[3])
     let cond: SeedExpr | null = null, chance: SeedExpr | null = null
     const ci = rest.search(/\bchance\b/)
     if (ci >= 0) { chance = compileExpr(rest.slice(ci + 6), known, where); rest = trimWS(rest.slice(0, ci)) }
     if (/^if[\t ]/.test(rest)) cond = compileExpr(rest.slice(3), known, where)
     else if (rest) throw new SeedoError(where + ': expected "if" or "chance"')
-    const rule: Rule = { c: m[1], params, cond, chance, succ: parseString(right, known, where, SEEDO_LIMITS.successor) }
+    const rule: Rule = { c: m[1], params, paramSlots: params.map((_, k) => paramBase + k), cond, chance, succ: parseString(right, known, where, SEEDO_LIMITS.successor) }
     rules.push(rule)
     const list = rulesByHead.get(rule.c)
     if (list) list.push(rule); else rulesByHead.set(rule.c, [rule])
@@ -284,7 +312,16 @@ export function parseDna(text: string, options: ParseDnaOptions = {}): Dna {
   axiom.forEach(addS)
   for (const r of rules) { alpha.add(r.c + '/' + r.params.length); r.succ.forEach(addS) }
   const speciesKey = [...alpha].sort().join(' ') + ' | ' + genes.map((g) => g.name).sort().join(' ')
-  return { ...prog, genes, lets, axiom, rules, rulesByHead, speciesKey }
+  return { ...prog, genes, lets, axiom, rules, rulesByHead, speciesKey, slots, slotCount: paramBase + SEEDO_LIMITS.params }
+}
+
+/**
+ * Read a mixed DNA's computed child text (§6.6), for example one cached and
+ * read back: the same as `parseDna`, without the 8,192-byte limit that binds
+ * only written DNAs (§3.1).
+ */
+export function parseChildText(text: string): Dna {
+  return parseDna(text, { computed: true })
 }
 
 /** Parse without throwing: the DNA, or the reason the text is invalid. */

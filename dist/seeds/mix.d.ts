@@ -87,8 +87,8 @@ export type MixSchedule = {
 export interface MixCommit {
     /** The `block` tag's height. */
     anchorHeight: number;
-    /** The `block` tag's hash, checked against `blockHash` when both are given. */
-    anchorHash?: string;
+    /** The `block` tag's hash: it MUST be the reader's block at that height (§6.2). */
+    anchorHash: string;
     /** The mixed DNA's `created_at`. */
     createdAt: number;
     /**
@@ -99,7 +99,7 @@ export interface MixCommit {
     /** The depths of both parents: 0 for a written DNA (§6.7). */
     parentDepths?: number[];
 }
-export declare function mixSchedule(commit: MixCommit, clock: number, time: HeaderTimeSource, blockHash?: BlockHashSource): MixSchedule;
+export declare function mixSchedule(commit: MixCommit, clock: number, time: HeaderTimeSource, blockHash: BlockHashSource): MixSchedule;
 /** A mixed DNA's tags, read (§8.1). */
 export interface MixedDnaTags {
     motherId: string;

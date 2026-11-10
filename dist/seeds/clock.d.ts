@@ -24,10 +24,14 @@ export declare function isSettled(createdAt: number, clock: number, time: Header
  * highest `h*` with `MTP(h*) < t` (MTP never decreases) and looks at
  * `h* + 1` down to `h* - 10`, as §4.2 describes.
  *
- * `h*` is found by galloping down from the clock and then bisecting, which
- * reads headers near the answer only. The reference walks down one block at a
- * time; the result is the same on any chain whose MTP never decreases, which
- * Bitcoin's consensus rules guarantee.
+ * `h*` is found by galloping down from the clock, never below height 10 (the
+ * lowest with an MTP), and then bisecting, which reads headers near the answer
+ * only. The reference walks down one block at a time; the result is the same
+ * on any chain whose MTP never decreases, which Bitcoin's consensus rules
+ * guarantee. A header store may hold only recent blocks, so when the gallop or
+ * the bisection reaches a header the reader lacks, this falls back to the
+ * reference's walk from the lowest height already known to be too late, and
+ * so never needs a header the reference does not.
  */
 export declare function highestAtOrBelow(t: number, time: HeaderTimeSource, clock: number): number;
 /**

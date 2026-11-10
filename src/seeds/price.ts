@@ -118,7 +118,9 @@ export function readSeed(ev: SeedsEvent): { ok: true; seed: SeedTags } | { ok: f
   if (!dna || !/^[0-9a-fA-F]{64}$/.test(dna[1] ?? '')) return { ok: false, reason: 'the dna tag is not 64 hex' }
   if (!planted || !isDecimal(planted[1])) return { ok: false, reason: 'planted is not a decimal' }
   if (scale && (!isDecimal(scale[1]) || Number(scale[1]) > 84)) return { ok: false, reason: 'scale is not a decimal from 0 to 84' }
-  if (!C || typeof C[1] !== 'string' || C[1] === '') return { ok: false, reason: 'no C tag' }
+  if (!C) return { ok: false, reason: 'no C tag' }
+  // a seed needs an exact coordinate, because its terroir depends on it (§8.2)
+  if (!/^[0-9a-f]{64}$/.test(C[1] ?? '')) return { ok: false, reason: 'C is not 64 lowercase hex' }
   if (!nonce) return { ok: false, reason: 'no nonce tag' }
   if (!seedPrecheck(ev)) return { ok: false, reason: 'the work is below its committed target or the base price' }
   const seed: SeedTags = { dnaId: dna[1].toLowerCase(), dnaRelay: dna[2] ?? '', planted: Number(planted[1]), scale: scale ? Number(scale[1]) : 0, coord: C[1], target: Number(nonce[2]) }

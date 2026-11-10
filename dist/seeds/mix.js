@@ -117,13 +117,12 @@ export function mixSchedule(commit, clock, time, blockHash) {
         return { state: 'invalid', reason: 'more than ' + MIX_DEPTH_MAX + ' mixes from written DNA' };
     if (commit.anchorHeight > clock)
         return { state: 'pending', reason: 'the anchor is above the clock height' };
-    if (commit.anchorHash !== undefined && blockHash) {
-        const h = blockHash(commit.anchorHeight);
-        if (!h)
-            return { state: 'pending', reason: 'the anchor block is missing' };
-        if (h.toLowerCase() !== commit.anchorHash.toLowerCase())
-            return { state: 'invalid', reason: 'the anchor is not on this chain' };
-    }
+    // §6.2: once the anchor is at most the clock height, its hash MUST be the reader's block there
+    const anchor = blockHash(commit.anchorHeight);
+    if (!anchor)
+        return { state: 'pending', reason: 'the anchor block is missing' };
+    if (anchor.toLowerCase() !== commit.anchorHash.toLowerCase())
+        return { state: 'invalid', reason: 'the anchor is not on this chain' };
     const eff = effectivePlantedHeight(commit.anchorHeight, commit.createdAt, clock, time);
     if (eff.state === 'pending')
         return { state: 'pending', reason: 'the commit height is not settled' };
@@ -157,8 +156,7 @@ export function readMixedDna(ev) {
         return { ok: false, reason: 'not exactly one father' };
     if (block.length !== 1 || !isDecimal(block[0][1]) || !/^[0-9a-f]{64}$/.test(block[0][2] ?? ''))
         return { ok: false, reason: 'not exactly one well-formed block tag' };
-    if (name.length > 1)
-        return { ok: false, reason: 'more than one name tag' };
+    // the first name tag counts, as a reader uses the first of any tag that should appear once (§8.2)
     const nameValue = name.length ? name[0][1] : undefined;
     const verdict = nameTagVerdict(nameValue);
     if (verdict === 'invalid')

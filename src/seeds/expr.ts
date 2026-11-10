@@ -1,12 +1,16 @@
 /**
  * SEEDO expressions (§3.4): tokens, the grammar, the size and depth limits,
  * and the integer semantics. An expression compiles to a function of an
- * environment of names.
+ * environment of slots: every name in use is given an index when the DNA is
+ * parsed, so evaluating a name is an array read, not a property lookup.
  */
 import { SEEDO_LIMITS, SEEDO_RESERVED } from './constants.js'
 
-/** Names to values: built-ins, genes, lets and rule parameters. */
-export type SeedEnv = Record<string, number>
+/** Values by slot: built-ins, genes, lets and rule parameters, at the indices the DNA's `slots` gives them. */
+export type SeedEnv = number[]
+
+/** The names in use where an expression stands, each with its slot. */
+export type SeedScope = ReadonlyMap<string, number>
 
 /** A compiled expression, with its node count `n` and depth `d` (§3.4). */
 export interface SeedExpr {
@@ -43,11 +47,11 @@ const DIGITS = /^\d+$/
 const NAME_START = /^[A-Za-z_]/
 
 /**
- * Compile one expression. `known` is the set of names in use where it stands;
- * `where` prefixes every error. Throws SeedoError on any text §3.4 refuses,
- * and refuses nesting past the depth limit before its stack grows.
+ * Compile one expression. `scope` maps each name in use where it stands to its
+ * slot; `where` prefixes every error. Throws SeedoError on any text §3.4
+ * refuses, and refuses nesting past the depth limit before its stack grows.
  */
-export function compileExpr(src: string, known: ReadonlySet<string>, where: string): SeedExpr {
+export function compileExpr(src: string, scope: SeedScope, where: string): SeedExpr {
   const toks: string[] = []
   const re = new RegExp(WS + '*(\\d+|[A-Za-z_][A-Za-z_0-9]*|==|!=|<=|>=|[-+*/%<>()])', 'y')
   const s = trimWS(src)
@@ -126,13 +130,16 @@ export function compileExpr(src: string, known: ReadonlySet<string>, where: stri
       const a = or()
       level--
       if (next() !== ')') throw new SeedoError(where + ': missing )')
-      return mk((e) => a(e), a.n, a.d + 1)
+      // parentheses are no node and add one to the depth: no wrapper, the same function one deeper
+      ;(a as { d: number }).d = a.d + 1
+      return a
     }
     if (DIGITS.test(t)) { const v = clampValue(parseInt(t, 10)); return mk(() => v, 1, 1) }
     if (SEEDO_RESERVED.includes(t)) throw new SeedoError(where + ': unexpected "' + t + '"')
     if (NAME_START.test(t)) {
-      if (!known.has(t)) throw new SeedoError(where + ': unknown name "' + t + '"')
-      return mk((e) => e[t], 1, 1)
+      const slot = scope.get(t)
+      if (slot === undefined) throw new SeedoError(where + ': unknown name "' + t + '"')
+      return mk((e) => e[slot], 1, 1)
     }
     throw new SeedoError(where + ': unexpected "' + t + '"')
   }

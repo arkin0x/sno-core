@@ -53,10 +53,14 @@ export function isSettled(createdAt, clock, time) {
  * highest `h*` with `MTP(h*) < t` (MTP never decreases) and looks at
  * `h* + 1` down to `h* - 10`, as §4.2 describes.
  *
- * `h*` is found by galloping down from the clock and then bisecting, which
- * reads headers near the answer only. The reference walks down one block at a
- * time; the result is the same on any chain whose MTP never decreases, which
- * Bitcoin's consensus rules guarantee.
+ * `h*` is found by galloping down from the clock, never below height 10 (the
+ * lowest with an MTP), and then bisecting, which reads headers near the answer
+ * only. The reference walks down one block at a time; the result is the same
+ * on any chain whose MTP never decreases, which Bitcoin's consensus rules
+ * guarantee. A header store may hold only recent blocks, so when the gallop or
+ * the bisection reaches a header the reader lacks, this falls back to the
+ * reference's walk from the lowest height already known to be too late, and
+ * so never needs a header the reference does not.
  */
 export function highestAtOrBelow(t, time, clock) {
     if (t < GENESIS_TIME)
@@ -65,26 +69,53 @@ export function highestAtOrBelow(t, time, clock) {
     if (medianTimePast(clock, time) < t)
         hs = clock;
     else {
-        // MTP(hi) >= t; find lo with MTP(lo) < t, doubling the step
-        let hi = clock, step = 1, lo = clock - 1;
-        while (medianTimePast(lo, time) >= t) {
-            hi = lo;
-            step *= 2;
-            lo = clock - step;
+        let hi = clock; // MTP(hi) >= t throughout
+        try {
+            let step = 1;
+            let lo = Math.max(MTP_FLOOR, clock - step);
+            for (;;) {
+                if (lo >= hi)
+                    return lowestBlocks(t, time, Math.min(clock, MTP_FLOOR)); // MTP(10) >= t
+                if (medianTimePast(lo, time) < t)
+                    break;
+                hi = lo;
+                step *= 2;
+                lo = Math.max(MTP_FLOOR, clock - step);
+            }
+            while (hi - lo > 1) {
+                const mid = lo + Math.floor((hi - lo) / 2);
+                if (medianTimePast(mid, time) < t)
+                    lo = mid;
+                else
+                    hi = mid;
+            }
+            hs = lo;
         }
-        while (hi - lo > 1) {
-            const mid = lo + Math.floor((hi - lo) / 2);
-            if (medianTimePast(mid, time) < t)
-                lo = mid;
-            else
-                hi = mid;
+        catch (e) {
+            if (!(e instanceof MissingHeaderError))
+                throw e;
+            hs = hi - 1;
+            while (medianTimePast(hs, time) >= t)
+                hs--;
         }
-        hs = lo;
     }
     for (let h = Math.min(clock, hs + 1); h >= hs - 10; h--)
         if (need(h, time) <= t)
             return h;
     throw new Error('unreachable: MTP(h*) < t but no block of h*-10..h* is at or below t');
+}
+/** The lowest height with a median time past: blocks 0 to 10. */
+const MTP_FLOOR = 10;
+/**
+ * When even MTP(10) is at or after `t`, no block above 10 can be at or before
+ * it (each header time exceeds the MTP before it), so the answer is among
+ * blocks 0 to 10.
+ */
+function lowestBlocks(t, time, top) {
+    for (let h = top; h >= 0; h--)
+        if (need(h, time) <= t)
+            return h;
+    return -1;
 }
 export function effectivePlantedHeight(stated, createdAt, clock, time) {
     try {

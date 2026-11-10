@@ -8,12 +8,16 @@
  * Growing is two steps, so a client can cache the first: `growSymbols` rewrites
  * the string once per generation (a day of blocks), and `drawBloom` turns it
  * into geometry at the current age, once per block. `growBloom` does both.
+ *
+ * Across a worker boundary, post the DNA's text and parse it in the worker: a
+ * parsed `Dna` holds compiled functions, which cannot be cloned. `tryGrowBloom`
+ * takes the text and returns errors instead of throwing.
  */
-import { BASE_CAPS, BLOCKS_PER_GENERATION, SEED_ONE, SEED_STEP, SEED_TICK, SEEDO_LIMITS, type Caps } from './constants.js'
+import { BASE_CAPS, BLOCKS_PER_GENERATION, SEED_ONE, SEED_STEP, SEED_TICK, SEEDO_BUILTINS, SEEDO_LIMITS, type Caps } from './constants.js'
 import { generationAt, grownFraction } from './clock.js'
 import { SeedoError, type SeedEnv } from './expr.js'
 import { fdiv, generationRoll, icos, isin, isqrt, symbolRoll, weatherWord } from './fixed.js'
-import { cutCodePoints, expressGene, type Dna } from './parse.js'
+import { cutCodePoints, expressGene, parseDna, type Dna } from './parse.js'
 import { sha256Hex } from './hash.js'
 import { terroir } from './terroir.js'
 import type { ShardPayload } from '../shards.js'
@@ -43,19 +47,55 @@ export interface BloomSymbol {
   b: number
 }
 
+/** Why growth stopped short of the generation the clock calls for. */
+export type GrowthStop = 'missing-block' | 'budget' | 'aborted'
+
 /** A bloom's string at a generation, ready to draw at any age within that generation. */
 export interface GrownSymbols {
   str: BloomSymbol[]
   /** The generation reached. */
   generation: number
-  /** The generation the clock calls for; more than `generation` when the reader lacks a block hash. */
+  /** The generation the clock calls for. */
   targetGeneration: number
-  /** The driving blocks used, in order. */
-  weatherBlocks: number[]
+  /** True when `generation` is `targetGeneration`. */
+  complete: boolean
+  /** Why it stopped short, when it did. Resume with `{ from }`. */
+  stopped?: GrowthStop
   /** The first driving block the reader lacked, when it is behind (§4.1). */
   missingBlock?: number
-  /** The environment: terroir, expressed genes and lets (§4.5). */
+  /** The driving blocks used, in order, since generation 1. */
+  weatherBlocks: number[]
+  /** Symbol steps this call spent (symbols visited by rewriting). */
+  steps: number
+  /** The seed's environment by slot: terroir, expressed genes and lets (§4.5). */
   env: SeedEnv
+  /** What this string was grown for, so `{ from }` can tell whether it still applies. */
+  grownFor: { dnaText: string; coord: string; planted: number | null; scale: number; symbolCap: number }
+}
+
+/** How much one call to `growSymbols` may do. */
+export interface GrowOptions {
+  /**
+   * A string grown earlier for the same DNA and seed, to continue from its
+   * generation instead of from the axiom. Ignored (growth starts again from
+   * the axiom, which is always right) when it was grown for another DNA,
+   * place, planted height, scale or symbol cap, or is past the generation
+   * the clock calls for.
+   */
+  from?: GrownSymbols
+  /**
+   * A budget in symbol steps. Growth stops before a generation that would
+   * take it past the budget, though every call grows at least one generation
+   * when one is due, so it always makes progress. Compare `worstCaseSteps`.
+   */
+  maxSteps?: number
+  /** Checked before each generation: an aborted signal stops growth there. */
+  signal?: { readonly aborted: boolean }
+}
+
+/** The most symbol steps growing a DNA with these caps can take: generations times symbols (§7). */
+export function worstCaseSteps(caps: Caps = BASE_CAPS): number {
+  return caps.generations * caps.symbols
 }
 
 /** The bloom's SNO payload (§5.5). A ShardPayload, built by construction to be valid. */
@@ -65,18 +105,46 @@ export interface BloomPayload extends ShardPayload {
   colors: number[]
 }
 
-/** A grown and drawn bloom. */
-export interface Bloom {
+/**
+ * The geometry as typed arrays, for a worker to post with its buffers in the
+ * transfer list (`bloomTransferList`) instead of cloning a payload.
+ */
+export interface BloomBuffers {
+  /** x, y, z per vertex in SNO ticks (120 per model unit; one model unit is 2^scale gibsons), clamped to 64 units. */
+  positions: Int32Array
+  /** One palette index per vertex (`cyberspace-neon-256`). */
+  colors: Uint8Array
+  /** Three vertex indices per face. */
+  faces: Uint32Array
+}
+
+/** The buffers to pass as a postMessage transfer list with `BloomBuffers`. */
+export function bloomTransferList(b: BloomBuffers): ArrayBuffer[] {
+  return [b.positions.buffer as ArrayBuffer, b.colors.buffer as ArrayBuffer, b.faces.buffer as ArrayBuffer]
+}
+
+/** What a drawn bloom says about its growth. */
+export interface BloomGrowth {
   /** Clock height minus the effective planted height (0 while not settled). */
   age: number
   generation: number
   targetGeneration: number
-  /** True when a driving block's hash was missing, so the bloom is drawn at an earlier generation (§4.1). */
+  /**
+   * True when growth stopped short of the generation the clock calls for: a
+   * missing block (§4.1), a budget or an abort. The bloom is still drawn at
+   * the clock's age, so every symbol of the generations it reached is fully
+   * grown; only the later rewrites are missing.
+   */
   behind: boolean
+  stopped?: GrowthStop
   missingBlock?: number
   /** Symbols in the string drawn. */
   symbols: number
   weatherBlocks: number[]
+}
+
+/** A grown and drawn bloom, with its payload, the payload's JSON and its hash. */
+export interface Bloom extends BloomGrowth {
   sno: BloomPayload
   /** The payload's compact JSON, keys in the §5.5 order. */
   json: string
@@ -84,37 +152,63 @@ export interface Bloom {
   sha256: string
 }
 
-/**
- * The environment of a seed (§4.5): terroir at its scale, every gene's
- * expressed value, then every `let` in order. Built once per seed.
- */
-export function bloomEnv(dna: Dna, coord: string, scale = 0): SeedEnv {
+/** A bloom drawn with `DrawOptions`: only the parts asked for are present. */
+export interface BloomParts extends BloomGrowth {
+  sno?: BloomPayload
+  json?: string
+  sha256?: string
+  buffers?: BloomBuffers
+}
+
+/** Which parts of a bloom to build. JSON and its hash cost a stringify and a SHA-256 of up to megabytes. */
+export interface DrawOptions {
+  /** The SNO payload. Default true. */
+  payload?: boolean
+  /** The payload's JSON and SHA-256; needs the payload. Default true. */
+  json?: boolean
+  /** Transferable typed arrays. Default false. */
+  buffers?: boolean
+}
+
+/** The environment of a seed by slot (§4.5): terroir, every gene's expressed value, then every `let`. */
+export function envSlots(dna: Dna, coord: string, scale = 0): SeedEnv {
   const t = terroir(coord, scale)
-  // A null prototype, so every name, `__proto__` and `constructor` included, is an ordinary key.
-  const env: SeedEnv = Object.create(null)
-  Object.assign(env, { w: 0, W: 0, g: 0, K: t.K, n0: t.n0, n1: t.n1, n2: t.n2, n3: t.n3, pl: t.pl })
-  for (const g of dna.genes) env[g.name] = expressGene(g)
-  for (const l of dna.lets) env[l.name] = l.fn(env)
+  const env: SeedEnv = new Array(dna.slotCount).fill(0)
+  const set = (name: string, v: number): void => { env[dna.slots.get(name) as number] = v }
+  set('K', t.K); set('n0', t.n0); set('n1', t.n1); set('n2', t.n2); set('n3', t.n3); set('pl', t.pl)
+  for (const g of dna.genes) set(g.name, expressGene(g))
+  for (const l of dna.lets) env[l.slot] = l.fn(env)
   return env
 }
+
+/** The environment of a seed by name, for people and tests: built-ins at 0, genes expressed, lets evaluated. */
+export function bloomEnv(dna: Dna, coord: string, scale = 0): Record<string, number> {
+  const env = envSlots(dna, coord, scale)
+  const out: Record<string, number> = Object.create(null)
+  for (const [name, slot] of dna.slots) out[name] = env[slot]
+  return out
+}
+
+const SLOT_w = SEEDO_BUILTINS.indexOf('w'), SLOT_W = SEEDO_BUILTINS.indexOf('W'), SLOT_g = SEEDO_BUILTINS.indexOf('g')
 
 function rewrite(dna: Dna, env: SeedEnv, str: BloomSymbol[], gen: number, word: number, symbolCap: number): BloomSymbol[] {
   const out: BloomSymbol[] = []
   let capped = false
-  const e: SeedEnv = Object.create(env)
-  e.W = generationRoll(word)
-  e.g = gen
+  const e = env.slice()
+  e[SLOT_W] = generationRoll(word)
+  e[SLOT_g] = gen
   for (let i = 0; i < str.length; i++) {
     const s = str[i]
     const rules = capped ? undefined : dna.rulesByHead.get(s.c)
     if (!rules) { out.push(s); continue }
-    e.w = symbolRoll(word, i)
+    const w = symbolRoll(word, i)
+    e[SLOT_w] = w
     let hit = null
     for (const r of rules) {
       if (r.params.length !== s.p.length) continue
-      for (let k = 0; k < r.params.length; k++) e[r.params[k]] = s.p[k]
+      for (let k = 0; k < r.paramSlots.length; k++) e[r.paramSlots[k]] = s.p[k]
       if (r.cond && !r.cond(e)) continue
-      if (r.chance && !(e.w < r.chance(e))) continue
+      if (r.chance && !(w < r.chance(e))) continue
       hit = r
       break
     }
@@ -135,28 +229,41 @@ function rewrite(dna: Dna, env: SeedEnv, str: BloomSymbol[], gen: number, word: 
 /**
  * Rewrite a seed's string up to the generation the clock calls for (§4.1,
  * §4.6). Throws SeedoError when the axiom is longer than the symbol cap
- * (§3.6). A missing block hash stops growth at the generation before it, and
- * says so, as §4.1 asks of a reader that is behind.
+ * (§3.6). A missing block hash stops growth at the generation before it and
+ * says so, as §4.1 asks of a reader that is behind; so do a budget and an
+ * abort (`GrowOptions`). Continue later with `{ from: grown }`.
  */
-export function growSymbols(dna: Dna, seed: SeedPlanting, clock: number, blockHash: BlockHashSource): GrownSymbols {
+export function growSymbols(dna: Dna, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions = {}): GrownSymbols {
   const caps = seed.caps ?? BASE_CAPS
   if (dna.axiom.length > caps.symbols) throw new SeedoError('the axiom is longer than the symbol cap')
-  const env = bloomEnv(dna, seed.coord, seed.scale ?? 0)
+  const scale = seed.scale ?? 0
   const age = seed.planted === null ? 0 : clock - seed.planted
   const target = seed.planted === null ? 0 : generationAt(age, caps.generations)
-  let str: BloomSymbol[] = dna.axiom.map((t) => ({ c: t.c, p: t.args.map((f) => f(env)), b: 0 }))
-  const weatherBlocks: number[] = []
-  let generation = 0
+  const grownFor = { dnaText: dna.text, coord: seed.coord, planted: seed.planted, scale, symbolCap: caps.symbols }
+  const f = options.from
+  const resume = f !== undefined && f.generation <= target && f.grownFor.dnaText === grownFor.dnaText &&
+    f.grownFor.coord === grownFor.coord && f.grownFor.planted === grownFor.planted &&
+    f.grownFor.scale === grownFor.scale && f.grownFor.symbolCap === grownFor.symbolCap
+  const env = resume ? f.env : envSlots(dna, seed.coord, scale)
+  let str: BloomSymbol[] = resume ? f.str : dna.axiom.map((t) => ({ c: t.c, p: t.args.map((x) => x(env)), b: 0 }))
+  let generation = resume ? f.generation : 0
+  const weatherBlocks = resume ? f.weatherBlocks.slice() : []
+  let steps = 0
+  let stopped: GrowthStop | undefined
   let missingBlock: number | undefined
-  for (let k = 1; k <= target; k++) {
+  for (let k = generation + 1; k <= target; k++) {
+    if (options.signal?.aborted) { stopped = 'aborted'; break }
+    if (options.maxSteps !== undefined && steps > 0 && steps + str.length > options.maxSteps) { stopped = 'budget'; break }
     const h = (seed.planted as number) + k * BLOCKS_PER_GENERATION
     const hash = blockHash(h)
-    if (!hash) { missingBlock = h; break }
+    if (!hash) { stopped = 'missing-block'; missingBlock = h; break }
+    steps += str.length
     weatherBlocks.push(h)
     str = rewrite(dna, env, str, k, weatherWord(hash), caps.symbols)
     generation = k
   }
-  const grown: GrownSymbols = { str, generation, targetGeneration: target, weatherBlocks, env }
+  const grown: GrownSymbols = { str, generation, targetGeneration: target, complete: generation === target, weatherBlocks, steps, env, grownFor }
+  if (stopped !== undefined) grown.stopped = stopped
   if (missingBlock !== undefined) grown.missingBlock = missingBlock
   return grown
 }
@@ -171,11 +278,12 @@ export interface BloomGeometry {
 
 const RING: ReadonlyArray<readonly [number, number]> = [[0, SEED_ONE], [-14189, -8192], [14189, -8192]]
 
-/** Draw a string with the turtle (§5.2, §5.3, §5.4) at an age in blocks. */
+/** Draw a string with the turtle (§5.2, §5.3, §5.4) at an age in blocks. `env` is the seed's slots (`envSlots`). */
 export function drawGeometry(dna: Dna, str: readonly BloomSymbol[], age: number, env: SeedEnv, vertexCap: number): BloomGeometry {
   const ONE = SEED_ONE, ONE2 = ONE * ONE, N = BLOCKS_PER_GENERATION
-  const SIZE = Math.max(10, Math.min(400, env.size))
-  const HUE = ((env.hue % 24) + 24) % 24, TONE = env.tone
+  const SIZE = Math.max(10, Math.min(400, env[dna.slots.get('size') as number]))
+  const hue = env[dna.slots.get('hue') as number]
+  const HUE = ((hue % 24) + 24) % 24, TONE = env[dna.slots.get('tone') as number]
   const paint = (c: number): number => {
     c = Math.max(0, Math.min(255, c))
     if (c >= 192) return c
@@ -301,25 +409,43 @@ export function toBloomPayload(name: string, geo: BloomGeometry, unit: number): 
   return sno
 }
 
-/** Draw a grown string at the clock height: the payload, its JSON and its hash. */
-export function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clock: number): Bloom {
+/** The geometry as transferable typed arrays. */
+export function toBloomBuffers(geo: BloomGeometry): BloomBuffers {
+  const faces = new Uint32Array(geo.F.length * 3)
+  for (let i = 0; i < geo.F.length; i++) { const f = geo.F[i]; faces[3 * i] = f[0]; faces[3 * i + 1] = f[1]; faces[3 * i + 2] = f[2] }
+  return { positions: Int32Array.from(geo.V), colors: Uint8Array.from(geo.C), faces }
+}
+
+/**
+ * Draw a grown string at the clock height. Without options: the payload, its
+ * JSON and its hash. With `DrawOptions`: only the parts asked for, for
+ * example `{ json: false, buffers: true }` in a worker that posts geometry.
+ */
+export function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clock: number): Bloom
+export function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clock: number, options: DrawOptions): BloomParts
+export function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clock: number, options: DrawOptions = {}): BloomParts {
   const caps = seed.caps ?? BASE_CAPS
   const age = seed.planted === null ? 0 : clock - seed.planted
   const geo = drawGeometry(dna, grown.str, Math.max(0, age), grown.env, caps.vertices)
-  const sno = toBloomPayload(dna.name, geo, seed.scale ?? 0)
-  const json = JSON.stringify(sno)
-  const bloom: Bloom = {
+  const bloom: BloomParts = {
     age,
     generation: grown.generation,
     targetGeneration: grown.targetGeneration,
-    behind: grown.missingBlock !== undefined,
+    behind: !grown.complete,
     symbols: grown.str.length,
     weatherBlocks: grown.weatherBlocks,
-    sno,
-    json,
-    sha256: sha256Hex(json),
   }
+  if (grown.stopped !== undefined) bloom.stopped = grown.stopped
   if (grown.missingBlock !== undefined) bloom.missingBlock = grown.missingBlock
+  if (options.payload ?? true) {
+    const sno = toBloomPayload(dna.name, geo, seed.scale ?? 0)
+    bloom.sno = sno
+    if (options.json ?? true) {
+      bloom.json = JSON.stringify(sno)
+      bloom.sha256 = sha256Hex(bloom.json)
+    }
+  }
+  if (options.buffers) bloom.buffers = toBloomBuffers(geo)
   return bloom
 }
 
@@ -329,6 +455,24 @@ export function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clo
  * or null while it is not settled. Throws SeedoError only when the axiom is
  * longer than the symbol cap.
  */
-export function growBloom(dna: Dna, seed: SeedPlanting, clock: number, blockHash: BlockHashSource): Bloom {
-  return drawBloom(dna, growSymbols(dna, seed, clock, blockHash), seed, clock)
+export function growBloom(dna: Dna, seed: SeedPlanting, clock: number, blockHash: BlockHashSource): Bloom
+export function growBloom(dna: Dna, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions): BloomParts
+export function growBloom(dna: Dna, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions = {}): BloomParts {
+  return drawBloom(dna, growSymbols(dna, seed, clock, blockHash, options), seed, clock, options)
+}
+
+/**
+ * `growBloom` for a worker: takes the DNA as its text (or parsed), and returns
+ * an invalid text, an axiom over the symbol cap or a malformed coordinate or
+ * scale as `{ ok: false, error }` instead of throwing.
+ */
+export function tryGrowBloom(dna: Dna | string, seed: SeedPlanting, clock: number, blockHash: BlockHashSource): { ok: true; bloom: Bloom } | { ok: false; error: string }
+export function tryGrowBloom(dna: Dna | string, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions): { ok: true; bloom: BloomParts } | { ok: false; error: string }
+export function tryGrowBloom(dna: Dna | string, seed: SeedPlanting, clock: number, blockHash: BlockHashSource, options: GrowOptions & DrawOptions = {}): { ok: true; bloom: BloomParts } | { ok: false; error: string } {
+  try {
+    const d = typeof dna === 'string' ? parseDna(dna) : dna
+    return { ok: true, bloom: growBloom(d, seed, clock, blockHash, options) }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
 }

@@ -26,6 +26,8 @@ export interface Rule {
     /** The head: a letter or a turtle character. */
     c: string;
     params: string[];
+    /** The slot of each parameter. Every rule's parameters share the slots after the DNA's names. */
+    paramSlots: number[];
     cond: SeedExpr | null;
     chance: SeedExpr | null;
     succ: SymbolTemplate[];
@@ -33,6 +35,7 @@ export interface Rule {
 /** A `let` line (§3.5). */
 export interface Let {
     name: string;
+    slot: number;
     fn: SeedExpr;
 }
 /** A parsed, valid DNA. */
@@ -61,23 +64,32 @@ export interface Dna {
     rulesByHead: ReadonlyMap<string, Rule[]>;
     /** Equal for two DNAs exactly when they are of one species (§3.9). */
     speciesKey: string;
+    /** The slot of every name: built-ins, standard genes, the text's genes and lets (§3.4). */
+    slots: ReadonlyMap<string, number>;
+    /** The length of an environment: every name's slot, then four for rule parameters. */
+    slotCount: number;
 }
 export interface ParseDnaOptions {
     /**
      * The text is a mixed DNA's computed child text (§6.6), which the 8,192-byte
-     * limit does not bound (§3.1). A written DNA's text always is.
+     * limit does not bound (§3.1). A written DNA's text always is. A child text
+     * cached and read again goes through `parseChildText`, which sets this.
      */
     computed?: boolean;
 }
 export declare const isLetter: (ch: string) => boolean;
 export declare const isSymbolChar: (ch: string) => boolean;
-/** True when a string holds an unpaired surrogate, which §3.1 refuses. */
-export declare const hasLoneSurrogate: (s: string) => boolean;
+/**
+ * True when a string holds an unpaired surrogate, which §3.1 refuses. A loop
+ * rather than a regular expression with a lookbehind, which Safari before 16.4
+ * cannot even compile.
+ */
+export declare function hasLoneSurrogate(s: string): boolean;
 /** The first `n` code points of a string. */
 export declare const cutCodePoints: (s: string, n: number) => string;
 /**
  * A line with its comment removed: everything from the first `#` to the end,
- * whatever it holds (§3.1). The reference's `/#.*$/` stops at a CR or U+2028
+ * whatever it holds (§3.1). The reference's `/#.*$/` stops at a CR, U+2028 or U+2029
  * in the comment and then removes nothing; the DECK's text is followed here.
  */
 export declare function stripComment(raw: string): string;
@@ -85,6 +97,12 @@ export declare function stripComment(raw: string): string;
 export declare function lineKeyword(line: string): string;
 /** Read a DNA's SEEDO text. Throws SeedoError when the text is invalid (§3). */
 export declare function parseDna(text: string, options?: ParseDnaOptions): Dna;
+/**
+ * Read a mixed DNA's computed child text (§6.6), for example one cached and
+ * read back: the same as `parseDna`, without the 8,192-byte limit that binds
+ * only written DNAs (§3.1).
+ */
+export declare function parseChildText(text: string): Dna;
 /** Parse without throwing: the DNA, or the reason the text is invalid. */
 export declare function tryParseDna(text: string, options?: ParseDnaOptions): {
     ok: true;

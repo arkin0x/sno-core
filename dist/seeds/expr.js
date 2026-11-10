@@ -1,7 +1,8 @@
 /**
  * SEEDO expressions (§3.4): tokens, the grammar, the size and depth limits,
  * and the integer semantics. An expression compiles to a function of an
- * environment of names.
+ * environment of slots: every name in use is given an index when the DNA is
+ * parsed, so evaluating a name is an array read, not a property lookup.
  */
 import { SEEDO_LIMITS, SEEDO_RESERVED } from './constants.js';
 /** A text that breaks a rule of §3: a reader MUST NOT grow it. */
@@ -28,11 +29,11 @@ const CMP = ['==', '!=', '<', '<=', '>', '>='];
 const DIGITS = /^\d+$/;
 const NAME_START = /^[A-Za-z_]/;
 /**
- * Compile one expression. `known` is the set of names in use where it stands;
- * `where` prefixes every error. Throws SeedoError on any text §3.4 refuses,
- * and refuses nesting past the depth limit before its stack grows.
+ * Compile one expression. `scope` maps each name in use where it stands to its
+ * slot; `where` prefixes every error. Throws SeedoError on any text §3.4
+ * refuses, and refuses nesting past the depth limit before its stack grows.
  */
-export function compileExpr(src, known, where) {
+export function compileExpr(src, scope, where) {
     const toks = [];
     const re = new RegExp(WS + '*(\\d+|[A-Za-z_][A-Za-z_0-9]*|==|!=|<=|>=|[-+*/%<>()])', 'y');
     const s = trimWS(src);
@@ -138,7 +139,8 @@ export function compileExpr(src, known, where) {
             level--;
             if (next() !== ')')
                 throw new SeedoError(where + ': missing )');
-            return mk((e) => a(e), a.n, a.d + 1);
+            a.d = a.d + 1;
+            return a;
         }
         if (DIGITS.test(t)) {
             const v = clampValue(parseInt(t, 10));
@@ -147,9 +149,10 @@ export function compileExpr(src, known, where) {
         if (SEEDO_RESERVED.includes(t))
             throw new SeedoError(where + ': unexpected "' + t + '"');
         if (NAME_START.test(t)) {
-            if (!known.has(t))
+            const slot = scope.get(t);
+            if (slot === undefined)
                 throw new SeedoError(where + ': unknown name "' + t + '"');
-            return mk((e) => e[t], 1, 1);
+            return mk((e) => e[slot], 1, 1);
         }
         throw new SeedoError(where + ': unexpected "' + t + '"');
     }

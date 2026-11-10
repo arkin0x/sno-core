@@ -76,6 +76,7 @@ function bench(label, text, caps, clock, hash) {
   const port = time(() => S.growBloom(dna, seed, clock, hash), 3, caps.generations > 100 ? 1 : 1500)
   const grown = S.growSymbols(dna, seed, clock, hash)
   const draw = time(() => S.drawBloom(dna, grown, seed, clock))
+  const drawLean = time(() => S.drawBloom(dna, grown, seed, clock, { json: false }))
   let ref = null
   if (R) {
     const prog = R.parseDNA(text)
@@ -84,7 +85,7 @@ function bench(label, text, caps, clock, hash) {
     if (R.sha256hex(Buffer.from(check.json, 'utf8')) !== b.sha256) throw new Error(label + ': the port and the reference disagree')
     ref = time(run, 3, caps.generations > 100 ? 1 : 1500)
   }
-  rows.push({ label, gens: b.generation, symbols: b.symbols, vertices: b.sno.vertices.length, bytes: b.json.length, port, draw, ref, steps: grown.generation * caps.symbols })
+  rows.push({ label, gens: b.generation, symbols: b.symbols, vertices: b.sno.vertices.length, bytes: b.json.length, port, draw, drawLean, ref })
 }
 
 for (const name of ['fiddlehead', 'sword fern', 'oak', 'willow', 'coral', 'crystal']) {
@@ -99,13 +100,14 @@ bench('slow DNA, largest caps (65536/16384/256)', slowDna(16384), LARGEST, P0 + 
   const dna = S.parseDna(text), seed = { coord: coordA, planted: P0, caps: LARGEST }, clock = P0 + 2 * 144
   const grown = S.growSymbols(dna, { ...seed, caps: { ...LARGEST, generations: 1 } }, clock, fakeHash)
   const draw = time(() => S.drawBloom(dna, grown, seed, clock))
+  const drawLean = time(() => S.drawBloom(dna, grown, seed, clock, { json: false }))
   const b = S.drawBloom(dna, grown, seed, clock)
-  rows.push({ label: 'draw only: 16,384 F, vertex cap 65,536', gens: grown.generation, symbols: grown.str.length, vertices: b.sno.vertices.length, bytes: b.json.length, port: null, draw, ref: null })
+  rows.push({ label: 'draw only: 16,384 F, vertex cap 65,536', gens: grown.generation, symbols: grown.str.length, vertices: b.sno.vertices.length, bytes: b.json.length, port: null, draw, drawLean, ref: null })
 }
 
 console.log('node ' + process.version + ', ' + (R ? 'reference: ' + refPath : 'reference not found'))
-console.log('| case | gen | symbols | vertices | SNO bytes | grow + draw (port) | grow + draw (reference) | draw only (port) |')
-console.log('|---|---|---|---|---|---|---|---|')
+console.log('| case | gen | symbols | vertices | SNO bytes | grow + draw (port) | grow + draw (reference) | draw only (port) | draw, json: false |')
+console.log('|---|---|---|---|---|---|---|---|---|')
 for (const r of rows) {
-  console.log(`| ${r.label} | ${r.gens} | ${r.symbols} | ${r.vertices} | ${r.bytes} | ${r.port ? fmt(r.port.median) : ''} | ${r.ref ? fmt(r.ref.median) : ''} | ${fmt(r.draw.median)} |`)
+  console.log(`| ${r.label} | ${r.gens} | ${r.symbols} | ${r.vertices} | ${r.bytes} | ${r.port ? fmt(r.port.median) : ''} | ${r.ref ? fmt(r.ref.median) : ''} | ${fmt(r.draw.median)} | ${fmt(r.drawLean.median)} |`)
 }
