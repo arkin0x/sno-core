@@ -1,7 +1,7 @@
 {
   "name": "sno-core",
-  "version": "0.1.26",
-  "description": "The SNO shard format and the geometry around it: the wire payload, the 256-colour palette, the stamps, winding, outlines, triangulation, clipping, and importing 3D files (PLY, STL, OBJ, glTF, VOX) as shards. Shared by snocrash and ONOSENDAI.",
+  "version": "0.1.27",
+  "description": "The SNO shard format and the geometry around it: the wire payload, the 256-colour palette, the stamps, winding, outlines, triangulation, clipping, and importing 3D files (PLY, STL, OBJ, glTF, VOX) as shards, and Seeds (DECK-0008), blooms grown from SEEDO DNA. Shared by snocrash, ONOSENDAI and cyberspace-mcp.",
   "license": "MIT",
   "repository": "https://github.com/arkin0x/sno-core",
   "type": "module",
@@ -29,9 +29,15 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build:dist"
+    "prepublishOnly": "npm run build:dist",
+    "check:seeds-vectors": "vitest run src/seeds/vectorsSource.test.ts",
+    "bench:seeds": "node scripts/bench-seeds.mjs"
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.0.1"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "typescript": "^5.6.0",
     "vitest": "^2.1.5"
   },

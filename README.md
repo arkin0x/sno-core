@@ -89,6 +89,7 @@ point order, and omits it when empty.
 | `importFile` | A 3D file picked by a person as a shard: PLY, STL, OBJ with its MTL, glTF or GLB, MagicaVoxel VOX. Format detection, size and time caps, and the request and answer a client's Web Worker passes |
 | `meshToShard` | Any mesh as an ordinary shard: fitted to the grid, quantized onto the lattice and welded, cleaned of faces with no area, colors snapped to the palette, and simplified by vertex clustering until the payload fits the byte budget |
 | `mesh`, `ply`, `stl`, `obj`, `gltf`, `vox` | The mesh every importer produces, the untrusted-input rules they share, and one pure parser per format. No dependencies and no network: a glTF buffer is read from the file, a data URI, or a file picked with it, never fetched |
+| `seeds` | Seeds ([DECK-0008](https://github.com/arkin0x/cyberspace/blob/master/decks/DECK-0008-seeds.md)): SEEDO parsing with every validity rule, terroir, the clock and the planted-height clamp, growing a bloom to a SNO payload and its hash, mixing, and the price of caps. A port of the DECK's reference interpreter, run against every section of its vectors (below) |
 | `feed` | Published objects read from relays (the Shard Feed): the filter (never a tag filter), each relay read on its own with deadlines, newest per address, paging each relay to its own end, objects for sale (`listingFromEvent`: an encrypted 33331 whose `encrypted` element [3] is an `https:` NIP-FF-1 key service, any seller's, with one price in `SATS` and a short printable `d`, carried as `listings` with its title, price and preview pictures, never as geometry; one hidden at a place, `cyberspace:region`, is still left out), where a listing is bought (`sellerLink`: the seller's NIP-89 handler page when it lists kind 33331, else a known key service's app, else njump, with the link's own domain), and the proposed credit tag for a copy. Networking is the client's, passed in |
 
 ## What is deliberately not in it
@@ -122,6 +123,68 @@ specifier, and imports the palette JSON with an import attribute, so `dist`
 loads under plain Node as well as under a bundler. That matters because a
 consumer's test run does not bundle its dependencies: vitest externalizes
 node_modules and hands them to Node.
+
+## Seeds, for client authors
+
+`sno-core/seeds` is the one implementation of DECK-0008 the clients share, so
+that every reader grows the same bloom. It has no DOM and no network: block
+hashes and header times are functions you pass in. Grow blooms in a Web Worker
+(§12, Compute); the module runs there unchanged.
+
+```ts
+import {
+  parseDna, capsFromTags, readSeed, capsPrice, effectivePlantedHeight, growBloom, clockHeight,
+} from 'sno-core/seeds'
+
+const dna = parseDna(dnaEvent.content)            // throws SeedoError: a seed of it cannot grow
+const caps = capsFromTags(dnaEvent.tags)          // null: the DNA is invalid
+const read = readSeed(seedEvent)                  // the §8.2 checks, before you fetch the DNA
+if (!read.ok || caps === null || read.seed.target < capsPrice(caps)!) return
+
+const clock = clockHeight(tipHeight)              // the tip minus 6
+const p = effectivePlantedHeight(read.seed.planted, seedEvent.created_at, clock, headerTime)
+if (p.state === 'cannot-grow') return
+const bloom = growBloom(dna, {
+  coord: read.seed.coord,
+  planted: p.state === 'settled' ? p.height : null, // null draws generation 0
+  scale: read.seed.scale,
+  caps,
+}, clock, blockHash)
+// bloom.sno is a ShardPayload: draw it as a shard standing at the seed's C (§5.6)
+```
+
+- `blockHash(height)` returns 64 hex in the order block explorers display it.
+  When it returns nothing for a driving block, the bloom is drawn at the last
+  generation it could compute, with `behind: true` and `missingBlock` (§4.1).
+- `headerTime(height)` returns the header's `time` field. A missing header
+  leaves the planted height `pending`, never stepped over (§4.2).
+- A generation changes once a day of blocks. Cache `growSymbols(...)` per
+  generation and call `drawBloom(...)` each block; together they are
+  `growBloom`.
+- Mixing: `readMixedDna` checks a mixed DNA's tags and work (§8.1);
+  `mixSchedule` says when it resolves (anchor check, settling, the 36-block
+  delay, depth, parents resolved first); `mixWord(outcome
+  hash, commit id)` and `mixDna(mother, father, word, { name, hybrid })` give
+  the child and its exact text. A preview may pass any 32-bit word (§6.8).
+- Errors in a DNA's text are `SeedoError`, with the reference interpreter's
+  messages; `tryParseDna` returns them instead of throwing.
+
+The vectors are vendored in `src/seeds/fixtures/` with the spec commit they
+came from. A test checks the copy against `../cyberspace` (or
+`CYBERSPACE_SPEC_DIR`) whenever a checkout is there (`npm run
+check:seeds-vectors`). `npm run bench:seeds`, after `npm run build:dist`,
+times growth, and the reference beside it when the checkout is there.
+
+Where the DECK and its reference interpreter disagree, this follows the DECK:
+a comment is removed from its first `#` whatever follows it, a CR or U+2028
+included (§3.1); a mixed child's computed text is not held to 8,192 bytes
+(§3.1); every name, `__proto__` included, is an ordinary name; and a missing
+block or header is reported rather than thrown (§4.1, §4.2). No vector reaches
+any of these.
+
+SHA-256 comes from `@noble/hashes`, the package's one runtime dependency,
+which the clients already carry through nostr-tools. It is synchronous, which
+growth needs, and runs in browsers and workers.
 
 ## Consuming it from an app
 
