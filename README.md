@@ -174,7 +174,9 @@ const bloom = growBloom(dna, {
   a string cached at an earlier generation is drawn `behind` until
   `growSymbols(..., { from: cached })` grows it on, and one grown for another
   DNA or seed, or past the clock's generation, is refused (check with
-  `growthApplies`).
+  `growthApplies`). A render loop should call `growthApplies(...)` before
+  each draw and regrow when it returns false: a string cached while a seed
+  was unsettled (`planted: null`) stops applying the moment the seed settles.
 - On a phone, bound each call: `{ maxSteps }` stops before a generation that
   would pass the budget (every call still grows at least one), and
   `{ signal }` stops at the next generation once aborted. Either returns a
