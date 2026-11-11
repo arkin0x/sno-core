@@ -3,7 +3,7 @@
  * axiom, rules, the validity limits and the species key. A text that breaks
  * any rule throws SeedoError, with the reference interpreter's message.
  */
-import { SEEDO_BUILTINS, SEEDO_KEYWORDS, SEEDO_LIMITS, SEEDO_RESERVED, SEEDO_REVISION, STANDARD_GENES } from './constants.js'
+import { OPACITY_GENE, SEEDO_BUILTINS, SEEDO_KEYWORDS, SEEDO_LIMITS, SEEDO_RESERVED, SEEDO_REVISION, STANDARD_GENES } from './constants.js'
 import { compileExpr, SeedoError, trimWS, WS, type SeedExpr, type SeedScope } from './expr.js'
 
 /** One allele of a gene: its value and whether it is dominant (§3.3). */
@@ -19,7 +19,7 @@ export interface Gene {
   b: Allele
   lo: number
   hi: number
-  /** One of `size`, `hue` and `tone`. */
+  /** One of `size`, `hue`, `tone` and `opacity`. */
   standard: boolean
   /** A standard gene the text does not declare: both alleles at the default, neither dominant. */
   implicit: boolean
@@ -263,9 +263,10 @@ export function parseDna(text: string, options: ParseDnaOptions = {}): Dna {
     // otherwise an unknown line (§3.2): ignored, though it counts toward the size limit
   }
   if (axiomSrc === null) throw new SeedoError('no axiom')
-  const stdGenes = STANDARD_GENES.map((x): Gene => genes.find((g) => g.name === x.name) ??
-    { name: x.name, a: { value: x.def, dominant: false }, b: { value: x.def, dominant: false }, lo: x.lo, hi: x.hi, standard: true, implicit: true })
-  genes = stdGenes.concat(genes.filter((g) => !g.standard))
+  const stdGene = (x: (typeof STANDARD_GENES)[number]): Gene => genes.find((g) => g.name === x.name) ??
+    { name: x.name, a: { value: x.def, dominant: false }, b: { value: x.def, dominant: false }, lo: x.lo, hi: x.hi, standard: true, implicit: true }
+  // §3.3: size, hue and tone, then the DNA's own genes in line order, then opacity
+  genes = STANDARD_GENES.filter((x) => x !== OPACITY_GENE).map(stdGene).concat(genes.filter((g) => !g.standard), [stdGene(OPACITY_GENE)])
   const axiom = parseString(axiomSrc, slots, axiomLine)
   const paramBase = slots.size
   if (ruleSrc.length > SEEDO_LIMITS.rules) throw new SeedoError('more than ' + SEEDO_LIMITS.rules + ' rules')

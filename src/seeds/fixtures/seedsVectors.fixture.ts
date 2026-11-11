@@ -12,7 +12,7 @@
 export const SEEDS_VECTORS_SOURCE = {
   repository: 'https://github.com/arkin0x/cyberspace',
   path: 'decks/seeds-vectors.json',
-  /** DECK-0008: Seeds (draft) (#91), 2026-11-10. */
-  commit: '6a397f8c52c371b85a4b886e5eda0e054bb1e62e',
-  sha256: 'c48c25dda86930a9e6bd98dd6dc9a882b50eea7a9c14204e69c460c5c1d32e61',
+  /** DECK-0008: opacity, a fourth standard gene (cyberspace PR #102, branch deck-0008-opacity-gene), 2026-11-11. */
+  commit: '506bf066dbff2b2a11eb37a9cf26cfdb2a12a792',
+  sha256: '49a12710dc255fa4f72314cd2992b4fbcf7b70ac03a37febcd21d79592489c7e',
 } as const

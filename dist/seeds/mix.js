@@ -3,7 +3,7 @@
  * and mutation, sterility and species, the child's exact text, and when a
  * committed mix resolves.
  */
-import { CLAMP_MARGIN, MIX_DELAY, MIX_DEPTH_MAX, MIX_DOMAIN, STANDARD_GENES } from './constants.js';
+import { CLAMP_MARGIN, MIX_DELAY, MIX_DEPTH_MAX, MIX_DOMAIN, OPACITY_GENE, STANDARD_GENES } from './constants.js';
 import { effectivePlantedHeight } from './clock.js';
 import { trimWS } from './expr.js';
 import { lowbias32, weatherWord } from './fixed.js';
@@ -55,8 +55,11 @@ export function mixDna(mother, father, s0, options = {}) {
     const draws = [];
     const genes = [];
     A.genes.forEach((ga, i) => {
-        const s = lowbias32(s0 ^ Math.imul(i + 1, 0x9E3779B1 | 0));
         const gb = B.genes.find((x) => x.name === ga.name);
+        // §6.4: an opacity that neither parent declares is skipped, and the child's is implicit
+        if (ga.name === OPACITY_GENE.name && ga.implicit && gb?.implicit)
+            return;
+        const s = lowbias32(s0 ^ Math.imul(i + 1, 0x9E3779B1 | 0));
         const ia = s & 1, ib = (s >>> 1) & 1;
         const a = { ...(ia ? ga.b : ga.a) };
         const b = gb ? { ...(ib ? gb.b : gb.a) } : { ...(ia ? ga.a : ga.b) };
@@ -84,9 +87,16 @@ export function mixDna(mother, father, s0, options = {}) {
     const head = ['dna ' + childName];
     if (!same)
         head.push('sterile');
-    for (const s of STANDARD_GENES)
+    for (const s of STANDARD_GENES) {
+        if (s === OPACITY_GENE)
+            continue;
         if (!A.genes.find((g) => g.name === s.name && !g.implicit))
             head.push(geneLine(byName.get(s.name)));
+    }
+    // §6.6: a father's declared opacity reaches the head when the mother has no opacity line of her own
+    const childOpacity = byName.get(OPACITY_GENE.name);
+    if (childOpacity && A.genes.find((g) => g.name === OPACITY_GENE.name)?.implicit)
+        head.push(geneLine(childOpacity));
     const out = [];
     let wroteHead = false;
     for (const raw of A.text.split('\n')) {

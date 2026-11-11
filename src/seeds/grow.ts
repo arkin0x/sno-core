@@ -13,7 +13,7 @@
  * parsed `Dna` holds compiled functions, which cannot be cloned. `tryGrowBloom`
  * takes the text and returns errors instead of throwing.
  */
-import { BASE_CAPS, BLOCKS_PER_GENERATION, SEED_ONE, SEED_STEP, SEED_TICK, SEEDO_BUILTINS, SEEDO_LIMITS, type Caps } from './constants.js'
+import { BASE_CAPS, BLOCKS_PER_GENERATION, SEED_ONE, SEED_STEP, SEED_TICK, SEEDO_BUILTINS, SEEDO_LIMITS, OPACITY_GENE, type Caps } from './constants.js'
 import { generationAt, grownFraction } from './clock.js'
 import { SeedoError, type SeedEnv } from './expr.js'
 import { fdiv, generationRoll, icos, isin, isqrt, symbolRoll, weatherWord } from './fixed.js'
@@ -116,6 +116,13 @@ export interface BloomBuffers {
   colors: Uint8Array
   /** Three vertex indices per face. */
   faces: Uint32Array
+  /**
+   * How solid the whole bloom is drawn, in percent (`10..99`): the expressed
+   * standard gene `opacity` (§5.4). Absent when it is 100, exactly when the
+   * payload omits it, so a client that builds a shard from the buffers sets
+   * the shard's `opacity` from this field and nothing else.
+   */
+  opacity?: number
 }
 
 /** The buffers to pass as a postMessage transfer list with `BloomBuffers`. */
@@ -398,8 +405,21 @@ export function drawGeometry(dna: Dna, str: readonly BloomSymbol[], age: number,
   return { V, C, F }
 }
 
-/** The SNO payload of drawn geometry (§5.5), keys in the order the payload hash needs. */
-export function toBloomPayload(name: string, geo: BloomGeometry, unit: number): BloomPayload {
+/**
+ * The bloom's opacity (§5.4): the expressed standard gene `opacity`, from 10
+ * to 100. A DNA that does not declare it is 100, fully solid.
+ */
+export function bloomOpacity(dna: Dna): number {
+  const g = dna.genes.find((x) => x.name === OPACITY_GENE.name)
+  return g ? expressGene(g) : OPACITY_GENE.def
+}
+
+/**
+ * The SNO payload of drawn geometry (§5.5), keys in the order the payload
+ * hash needs. `opacity` is the bloom's (`bloomOpacity`); it is written after
+ * `faces`, and only when it is below 100.
+ */
+export function toBloomPayload(name: string, geo: BloomGeometry, unit: number, opacity = 100): BloomPayload {
   const n = geo.V.length / 3
   const vertices: Array<[number, number, number]> = []
   const ticks: Array<[number, number, number] | number> = []
@@ -419,7 +439,7 @@ export function toBloomPayload(name: string, geo: BloomGeometry, unit: number): 
   }
   const allZero = ticks.length === 0
   if (!allZero) { if (zr === 1) ticks.push([0, 0, 0]); else if (zr > 1) ticks.push(-zr) }
-  // Built key by key: the order is v, name, unit, extent, mode, vertices, ticks, colors, faces.
+  // Built key by key: the order is v, name, unit, extent, mode, vertices, ticks, colors, faces, opacity.
   const sno = { v: 2, name: cutCodePoints(name, 64), unit } as BloomPayload
   const e = Math.min(64, ext)
   if (e !== 8) sno.extent = e
@@ -428,14 +448,17 @@ export function toBloomPayload(name: string, geo: BloomGeometry, unit: number): 
   if (!allZero) sno.ticks = ticks
   sno.colors = geo.C.slice()
   sno.faces = geo.F
+  if (opacity < 100) sno.opacity = opacity
   return sno
 }
 
-/** The geometry as transferable typed arrays. */
-export function toBloomBuffers(geo: BloomGeometry): BloomBuffers {
+/** The geometry as transferable typed arrays, with the bloom's opacity when it is below 100. */
+export function toBloomBuffers(geo: BloomGeometry, opacity = 100): BloomBuffers {
   const faces = new Uint32Array(geo.F.length * 3)
   for (let i = 0; i < geo.F.length; i++) { const f = geo.F[i]; faces[3 * i] = f[0]; faces[3 * i + 1] = f[1]; faces[3 * i + 2] = f[2] }
-  return { positions: Int32Array.from(geo.V), colors: Uint8Array.from(geo.C), faces }
+  const b: BloomBuffers = { positions: Int32Array.from(geo.V), colors: Uint8Array.from(geo.C), faces }
+  if (opacity < 100) b.opacity = opacity
+  return b
 }
 
 /**
@@ -469,14 +492,14 @@ export function drawBloom(dna: Dna, grown: GrownSymbols, seed: SeedPlanting, clo
   if (bloom.behind && grown.stopped !== undefined) bloom.stopped = grown.stopped
   if (bloom.behind && grown.missingBlock !== undefined) bloom.missingBlock = grown.missingBlock
   if (options.payload ?? true) {
-    const sno = toBloomPayload(dna.name, geo, seed.scale ?? 0)
+    const sno = toBloomPayload(dna.name, geo, seed.scale ?? 0, bloomOpacity(dna))
     bloom.sno = sno
     if (options.json ?? true) {
       bloom.json = JSON.stringify(sno)
       bloom.sha256 = sha256Hex(bloom.json)
     }
   }
-  if (options.buffers) bloom.buffers = toBloomBuffers(geo)
+  if (options.buffers) bloom.buffers = toBloomBuffers(geo, bloomOpacity(dna))
   return bloom
 }
 

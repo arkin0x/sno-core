@@ -84,12 +84,24 @@ export declare const SEEDO_BUILTINS: readonly string[];
 export declare const SEEDO_RESERVED: readonly string[];
 /** A standard gene: its default value and range, and the bounds a declared range is narrowed to (§3.3). */
 export interface StandardGene {
-    name: 'size' | 'hue' | 'tone';
+    name: 'size' | 'hue' | 'tone' | 'opacity';
     def: number;
     lo: number;
     hi: number;
     min: number;
     max: number;
 }
+/**
+ * The fourth standard gene (§3.3): how solid the whole bloom is drawn, in
+ * percent, carried as the payload's `opacity` below 100 (§5.4, §5.5). It is
+ * last in the genome, after the DNA's own genes, so adding it moved no other
+ * gene's index in a mix (§6.4). Its default range, 100..100, keeps every DNA
+ * that never mentions it fully solid, and every mix of two such DNAs too.
+ */
+export declare const OPACITY_GENE: StandardGene;
+/**
+ * The standard genes (§3.3). Every DNA has all four. The genome holds the
+ * first three first, then the DNA's own genes, then `opacity`.
+ */
 export declare const STANDARD_GENES: readonly StandardGene[];
 //# sourceMappingURL=constants.d.ts.map

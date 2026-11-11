@@ -67,9 +67,22 @@ export const SEED_SIN = [0, 286, 572, 857, 1143, 1428, 1713, 1997, 2280, 2563, 2
 export const SEEDO_BUILTINS = ['w', 'W', 'g', 'K', 'n0', 'n1', 'n2', 'n3', 'pl'];
 /** The words that are never names (§3.4). */
 export const SEEDO_RESERVED = ['and', 'or', 'not', 'if', 'chance', 'in'];
+/**
+ * The fourth standard gene (§3.3): how solid the whole bloom is drawn, in
+ * percent, carried as the payload's `opacity` below 100 (§5.4, §5.5). It is
+ * last in the genome, after the DNA's own genes, so adding it moved no other
+ * gene's index in a mix (§6.4). Its default range, 100..100, keeps every DNA
+ * that never mentions it fully solid, and every mix of two such DNAs too.
+ */
+export const OPACITY_GENE = { name: 'opacity', def: 100, lo: 100, hi: 100, min: 10, max: 100 };
+/**
+ * The standard genes (§3.3). Every DNA has all four. The genome holds the
+ * first three first, then the DNA's own genes, then `opacity`.
+ */
 export const STANDARD_GENES = [
     { name: 'size', def: 100, lo: 50, hi: 200, min: 10, max: 400 },
     { name: 'hue', def: 0, lo: 0, hi: 23, min: 0, max: 23 },
     { name: 'tone', def: 0, lo: -4, hi: 4, min: -7, max: 7 },
+    OPACITY_GENE,
 ];
 //# sourceMappingURL=constants.js.map

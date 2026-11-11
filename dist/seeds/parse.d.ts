@@ -11,7 +11,7 @@ export interface Gene {
     b: Allele;
     lo: number;
     hi: number;
-    /** One of `size`, `hue` and `tone`. */
+    /** One of `size`, `hue`, `tone` and `opacity`. */
     standard: boolean;
     /** A standard gene the text does not declare: both alleles at the default, neither dominant. */
     implicit: boolean;
