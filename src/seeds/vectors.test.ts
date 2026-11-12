@@ -293,13 +293,24 @@ describe('opacity, the fourth standard gene (§3.3, §5.4, §5.5, §6.4, §6.6)'
     expect(() => parseDna(r.dna)).toThrow(SeedoError)
     expect(() => parseDna(r.dna)).toThrow(r.error_in_reference)
   })
+  it('the glass crystal of the growth cases is the glass crystal the mixes use', () => expect(O.growth[0].dna).toBe(O.dnas['glass crystal']))
+  it('the mixes cover both parents declaring opacity, a mutated opacity and a sterile hybrid', () => {
+    const op = (m: any) => m.genes.find((g: any) => g.name === 'opacity')
+    expect(O.mixes.some((m: any) => m.mother === 'glass crystal' && m.father === 'frost crystal' && op(m).mutated === null)).toBe(true)
+    expect(O.mixes.some((m: any) => op(m)?.mutated)).toBe(true)
+    expect(O.mixes.some((m: any) => m.hybrid && m.child_sterile && m.child_growth.opacity !== null)).toBe(true)
+  })
   it.each(cases(O.mixes, (m: any) => m.what))('%s', (_w, m: any) => {
-    const dnas: Record<string, Dna> = { crystal: parseDna(V.growth.dnas.crystal), 'glass crystal': parseDna(O.growth[0].dna) }
+    const dnas: Record<string, Dna> = {
+      crystal: parseDna(V.growth.dnas.crystal), coral: parseDna(V.growth.dnas.coral),
+      'glass crystal': parseDna(O.dnas['glass crystal']), 'frost crystal': parseDna(O.dnas['frost crystal']),
+    }
     const A = dnas[m.mother], B = dnas[m.father]
     const s0 = weatherWord(blockHash(m.word_from_block) as string)
     expect(s0).toBe(m.mix_word)
-    const r = mixDna(A, B, s0)
+    const r = mixDna(A, B, s0, { hybrid: !!m.hybrid })
     if (r.refused) throw new Error('refused: ' + r.refused)
+    if (m.child_sterile !== undefined) expect(r.dna.sterile).toBe(m.child_sterile)
     expect(r.draws.map((d) => ({
       name: d.name, index: A.genes.findIndex((g) => g.name === d.name), word: d.word, alleles_from: d.from, a: allele(d.child.a), b: allele(d.child.b),
       lo: d.child.lo, hi: d.child.hi, expressed: d.expressed, mutated: d.mutated,
