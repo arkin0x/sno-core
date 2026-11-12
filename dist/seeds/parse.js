@@ -3,7 +3,7 @@
  * axiom, rules, the validity limits and the species key. A text that breaks
  * any rule throws SeedoError, with the reference interpreter's message.
  */
-import { SEEDO_BUILTINS, SEEDO_KEYWORDS, SEEDO_LIMITS, SEEDO_RESERVED, SEEDO_REVISION, STANDARD_GENES } from './constants.js';
+import { OPACITY_GENE, SEEDO_BUILTINS, SEEDO_KEYWORDS, SEEDO_LIMITS, SEEDO_RESERVED, SEEDO_REVISION, STANDARD_GENES } from './constants.js';
 import { compileExpr, SeedoError, trimWS, WS } from './expr.js';
 const TURTLE = "+-&^\\/|[]!'";
 const LETTER_RE = /^[A-Za-z]$/;
@@ -242,9 +242,10 @@ export function parseDna(text, options = {}) {
     }
     if (axiomSrc === null)
         throw new SeedoError('no axiom');
-    const stdGenes = STANDARD_GENES.map((x) => genes.find((g) => g.name === x.name) ??
-        { name: x.name, a: { value: x.def, dominant: false }, b: { value: x.def, dominant: false }, lo: x.lo, hi: x.hi, standard: true, implicit: true });
-    genes = stdGenes.concat(genes.filter((g) => !g.standard));
+    const stdGene = (x) => genes.find((g) => g.name === x.name) ??
+        { name: x.name, a: { value: x.def, dominant: false }, b: { value: x.def, dominant: false }, lo: x.lo, hi: x.hi, standard: true, implicit: true };
+    // §3.3: size, hue and tone, then the DNA's own genes in line order, then opacity
+    genes = STANDARD_GENES.filter((x) => x !== OPACITY_GENE).map(stdGene).concat(genes.filter((g) => !g.standard), [stdGene(OPACITY_GENE)]);
     const axiom = parseString(axiomSrc, slots, axiomLine);
     const paramBase = slots.size;
     if (ruleSrc.length > SEEDO_LIMITS.rules)

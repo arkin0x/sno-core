@@ -1,6 +1,6 @@
 {
   "name": "sno-core",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "description": "The SNO shard format and the geometry around it: the wire payload, the 256-colour palette, the stamps, winding, outlines, triangulation, clipping, and importing 3D files (PLY, STL, OBJ, glTF, VOX) as shards, and Seeds (DECK-0008), blooms grown from SEEDO DNA. Shared by snocrash, ONOSENDAI and cyberspace-mcp.",
   "license": "MIT",
   "repository": "https://github.com/arkin0x/sno-core",

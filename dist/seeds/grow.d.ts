@@ -109,6 +109,13 @@ export interface BloomBuffers {
     colors: Uint8Array;
     /** Three vertex indices per face. */
     faces: Uint32Array;
+    /**
+     * How solid the whole bloom is drawn, in percent (`10..99`): the expressed
+     * standard gene `opacity` (§5.4). Absent when it is 100, exactly when the
+     * payload omits it, so a client that builds a shard from the buffers sets
+     * the shard's `opacity` from this field and nothing else.
+     */
+    opacity?: number;
 }
 /** The buffers to pass as a postMessage transfer list with `BloomBuffers`. */
 export declare function bloomTransferList(b: BloomBuffers): ArrayBuffer[];
@@ -186,10 +193,19 @@ export interface BloomGeometry {
 }
 /** Draw a string with the turtle (§5.2, §5.3, §5.4) at an age in blocks. `env` is the seed's slots (`envSlots`). */
 export declare function drawGeometry(dna: Dna, str: readonly BloomSymbol[], age: number, env: SeedEnv, vertexCap: number): BloomGeometry;
-/** The SNO payload of drawn geometry (§5.5), keys in the order the payload hash needs. */
-export declare function toBloomPayload(name: string, geo: BloomGeometry, unit: number): BloomPayload;
-/** The geometry as transferable typed arrays. */
-export declare function toBloomBuffers(geo: BloomGeometry): BloomBuffers;
+/**
+ * The bloom's opacity (§5.4): the expressed standard gene `opacity`, from 10
+ * to 100. A DNA that does not declare it is 100, fully solid.
+ */
+export declare function bloomOpacity(dna: Dna): number;
+/**
+ * The SNO payload of drawn geometry (§5.5), keys in the order the payload
+ * hash needs. `opacity` is the bloom's (`bloomOpacity`); it is written after
+ * `faces`, and only when it is below 100.
+ */
+export declare function toBloomPayload(name: string, geo: BloomGeometry, unit: number, opacity?: number): BloomPayload;
+/** The geometry as transferable typed arrays, with the bloom's opacity when it is below 100. */
+export declare function toBloomBuffers(geo: BloomGeometry, opacity?: number): BloomBuffers;
 /**
  * Draw a grown string at the clock height. Without options: the payload, its
  * JSON and its hash. With `DrawOptions`: only the parts asked for, for

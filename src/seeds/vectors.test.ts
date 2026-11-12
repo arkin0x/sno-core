@@ -10,6 +10,7 @@ import {
   isin, isqrt, isSettled, leadingZeroBits, lowbias32, medianTimePast, mixDna, mixHash, mixSchedule, mixWord,
   mixWorkOk, nameTagVerdict, parseDna, readMixedDna, readSeed, SeedoError, seedPrecheck, sha256Hex, symbolRoll, terroir,
   weatherWord, workOk, type Dna, type SeedsEvent,
+  bloomOpacity, drawBloom, growSymbols, OPACITY_GENE, STANDARD_GENES,
 } from '../seeds.js'
 import { highestAtOrBelow } from './clock.js'
 
@@ -85,7 +86,8 @@ describe('accepted', () => {
     expect(d.name).toBe(a.name)
     expect(d.mutate).toBe(a.mutate)
     expect(d.rules.length).toBe(a.rules)
-    expect(d.genes.map((g) => [g.name, allele(g.a), allele(g.b), g.lo, g.hi, expressGene(g)])).toEqual(a.genes)
+    // the vectors list a genome without an implicit opacity, as they did before opacity existed
+    expect(d.genes.filter((g) => !(g.name === 'opacity' && g.implicit)).map((g) => [g.name, allele(g.a), allele(g.b), g.lo, g.hi, expressGene(g)])).toEqual(a.genes)
   })
 })
 
@@ -256,3 +258,68 @@ describe('price', () => {
   it('the mix floor', () => expect(V.price.mix_floor).toBe(MIX_FLOOR))
   it.each(cases(V.price.rows, (r: any) => JSON.stringify(r.caps)))('%s', (_w, r: any) => expect(capsPrice(r.caps)).toBe(r.bits))
 })
+
+describe('opacity, the fourth standard gene (§3.3, §5.4, §5.5, §6.4, §6.6)', () => {
+  const O = V.opacity
+  it('the standard gene', () => {
+    expect(OPACITY_GENE).toEqual(O.standard_gene)
+    expect(STANDARD_GENES.map((g) => g.name)).toEqual(['size', 'hue', 'tone', 'opacity'])
+  })
+  it.each(cases(O.growth, (c: any) => c.what))('%s', (_w, c: any) => {
+    const dna = parseDna(c.dna)
+    const b = growBloom(dna, { coord: c.coord, planted: c.planted, scale: c.scale, caps: c.caps }, c.clock, blockHash)
+    expect(b.generation).toBe(c.generation)
+    expect(b.sno.vertices.length).toBe(c.vertices)
+    expect(b.sno.faces.length).toBe(c.faces)
+    expect(b.sno.opacity ?? null).toBe(c.opacity)
+    expect(bloomOpacity(dna)).toBe(c.opacity ?? 100)
+    expect(b.json.length).toBe(c.sno_bytes)
+    expect(b.sha256).toBe(c.sno_sha256)
+    const { opacity: _o, ...solid } = b.sno
+    expect(sha256Hex(JSON.stringify(solid))).toBe(c.sno_sha256_without_opacity)
+    if (c.sno) expect(b.sno).toEqual(c.sno)
+    // the buffers carry the opacity exactly when the payload does
+    const seed = { coord: c.coord, planted: c.planted, scale: c.scale, caps: c.caps }
+    const parts = drawBloom(dna, growSymbols(dna, seed, c.clock, blockHash), seed, c.clock, { payload: false, buffers: true })
+    expect(parts.buffers?.opacity ?? null).toBe(c.opacity)
+  })
+  it.each(cases(O.accepted, (a: any) => a.why))('accepted: %s', (_w, a: any) => {
+    const d = parseDna(a.dna)
+    expect(d.genes.map((g) => [g.name, allele(g.a), allele(g.b), g.lo, g.hi, expressGene(g)])).toEqual(a.genes)
+    const env = bloomEnv(d, coordAOf(), 0)
+    expect(env.opacity).toBe(a.opacity)
+  })
+  it.each(cases(O.rejected, (r: any) => r.why))('rejected: %s', (_w, r: any) => {
+    expect(() => parseDna(r.dna)).toThrow(SeedoError)
+    expect(() => parseDna(r.dna)).toThrow(r.error_in_reference)
+  })
+  it('the glass crystal of the growth cases is the glass crystal the mixes use', () => expect(O.growth[0].dna).toBe(O.dnas['glass crystal']))
+  it('the mixes cover both parents declaring opacity, a mutated opacity and a sterile hybrid', () => {
+    const op = (m: any) => m.genes.find((g: any) => g.name === 'opacity')
+    expect(O.mixes.some((m: any) => m.mother === 'glass crystal' && m.father === 'frost crystal' && op(m).mutated === null)).toBe(true)
+    expect(O.mixes.some((m: any) => op(m)?.mutated)).toBe(true)
+    expect(O.mixes.some((m: any) => m.hybrid && m.child_sterile && m.child_growth.opacity !== null)).toBe(true)
+  })
+  it.each(cases(O.mixes, (m: any) => m.what))('%s', (_w, m: any) => {
+    const dnas: Record<string, Dna> = {
+      crystal: parseDna(V.growth.dnas.crystal), coral: parseDna(V.growth.dnas.coral),
+      'glass crystal': parseDna(O.dnas['glass crystal']), 'frost crystal': parseDna(O.dnas['frost crystal']),
+    }
+    const A = dnas[m.mother], B = dnas[m.father]
+    const s0 = weatherWord(blockHash(m.word_from_block) as string)
+    expect(s0).toBe(m.mix_word)
+    const r = mixDna(A, B, s0, { hybrid: !!m.hybrid })
+    if (r.refused) throw new Error('refused: ' + r.refused)
+    if (m.child_sterile !== undefined) expect(r.dna.sterile).toBe(m.child_sterile)
+    expect(r.draws.map((d) => ({
+      name: d.name, index: A.genes.findIndex((g) => g.name === d.name), word: d.word, alleles_from: d.from, a: allele(d.child.a), b: allele(d.child.b),
+      lo: d.child.lo, hi: d.child.hi, expressed: d.expressed, mutated: d.mutated,
+    }))).toEqual(m.genes)
+    expect(r.text).toBe(m.child_text)
+    const g = growBloom(r.dna, { coord: coordAOf(), planted: m.child_growth.planted, scale: 0, caps: O.growth[0].caps }, m.child_growth.clock, blockHash)
+    expect(g.sno.opacity ?? null).toBe(m.child_growth.opacity)
+    expect(g.sno.vertices.length).toBe(m.child_growth.vertices)
+    expect(g.sha256).toBe(m.child_growth.sno_sha256)
+  })
+})
+function coordAOf(): string { return V.opacity.growth[0].coord }
