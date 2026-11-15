@@ -5,6 +5,9 @@
  * an import that still says which module a name came from is the one thing a
  * reader loses when a directory becomes a package.
  */
+export * from './anim.js';
+export * from './animClock.js';
+export * from './animEdit.js';
 export * from './clip.js';
 export * from './feed.js';
 export * from './fingerprint.js';
