@@ -618,7 +618,7 @@ function readPart(e: unknown, refCount: number, mirror: boolean): Part | null {
  * author their translucency and nothing else. 100 reads as absent too, so a
  * model only ever holds 0 to 99. `-0` is the integer 0 (JSON has one zero).
  *
- * Until 0.1.29 the range was 1 to 100 with a floor of 10, and 0 was malformed.
+ * Until 0.1.30 the range was 1 to 100 with a floor of 10, and 0 was malformed.
  * The owner ruled 0 to 100 on 2026-11-15, with no floor: at 0 an object draws
  * nothing of its own, so that its glow can be cast without a point.
  */

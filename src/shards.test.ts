@@ -862,7 +862,7 @@ describe('opacity (DECK-0003 §1.11)', () => {
     expect(toPayload({ ...tri, opacity: -1 })).not.toHaveProperty('opacity')
     expect(toPayload({ ...tri, opacity: 33.3 })).not.toHaveProperty('opacity')
     expect(drawnOpacity({ opacity: -1 })).toBe(1)
-    // 0 is valid since 0.1.29, and kept.
+    // 0 is valid since 0.1.30, and kept.
     expect(toPayload({ ...tri, opacity: 0 }).opacity).toBe(0)
     expect(drawnOpacity({ opacity: 0 })).toBe(0)
     // A stored -0 is held and written as 0.
