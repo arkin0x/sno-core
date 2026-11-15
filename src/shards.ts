@@ -447,7 +447,7 @@ export function normalizeStored(saved: ShardModel): ShardModel {
   const lifted = liftKnown(saved)
   const { opacity: _held, ...bare } = lifted
   const opacity = readOpacity(lifted.opacity)
-  const s: ShardModel = lifted.opacity === opacity ? lifted : opacity === undefined ? bare : { ...bare, opacity }
+  const s: ShardModel = Object.is(lifted.opacity, opacity) ? lifted : opacity === undefined ? bare : { ...bare, opacity }
   // Models from before the pose have no `up` or `spin`: they lie as built.
   const stored = s as Partial<ShardModel>
   const posed = stored.up === undefined || stored.spin === undefined ? { ...s, up: stored.up ?? false, spin: stored.spin ?? 0 } : s
@@ -668,7 +668,7 @@ export function toPayload(s: ShardModel): ShardPayload {
     // no place, so they travel untouched and nothing applies them.
     ...(s.up ? { up: true as const, spin: wrapSpin(s.spin) } : {}),
     // §1.11: written only below 100, the canonical form, and only when valid.
-    ...(readOpacity(s.opacity) !== undefined ? { opacity: s.opacity } : {}),
+    ...((): { opacity?: number } => { const o = readOpacity(s.opacity); return o !== undefined ? { opacity: o } : {} })(),
     // §1.10: what this object carries for its placements, flat, in key order.
     ...((): { objects?: Record<string, unknown> } => { const o = writtenObjects(s); return o ? { objects: o } : {} })(),
     // Fields this library does not know, written back as they were read

@@ -767,8 +767,10 @@ describe('opacity (DECK-0003 §1.11)', () => {
       expect(drawnOpacity(s)).toBe(v / 100)
       expect(toPayload(s).opacity).toBe(v)
     }
-    // JSON has one zero: -0 is 0 and is written as 0.
-    const neg = fromPayload(wire({ opacity: -0 }), 'x')!
+    // JSON has one zero: -0 is 0 and is written as 0. Not through wire(),
+    // whose JSON round trip would turn -0 into 0 before fromPayload saw it.
+    expect(Object.is(readOpacity(-0), 0)).toBe(true)
+    const neg = fromPayload({ ...toPayload(tri), opacity: -0 }, 'x')!
     expect(Object.is(neg.opacity, 0)).toBe(true)
     expect(JSON.stringify(toPayload(neg))).toContain('"opacity":0')
   })
@@ -863,6 +865,9 @@ describe('opacity (DECK-0003 §1.11)', () => {
     // 0 is valid since 0.1.29, and kept.
     expect(toPayload({ ...tri, opacity: 0 }).opacity).toBe(0)
     expect(drawnOpacity({ opacity: 0 })).toBe(0)
+    // A stored -0 is held and written as 0.
+    expect(Object.is(normalizeStored({ ...tri, opacity: -0 }).opacity, 0)).toBe(true)
+    expect(Object.is(toPayload({ ...tri, opacity: -0 }).opacity, 0)).toBe(true)
   })
 })
 

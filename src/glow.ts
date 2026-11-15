@@ -62,10 +62,10 @@ export function readPointSize(raw: unknown): number | undefined {
 export function readGlow(raw: unknown): Glow | undefined {
   if (!Array.isArray(raw) || raw.length !== 3) return undefined
   const [style, radius, strength] = raw as unknown[]
-  if (style !== 'light' && style !== 'fog') return undefined
+  if (!(GLOW_STYLES as readonly unknown[]).includes(style)) return undefined
   if (!isInt(radius) || radius < 1 || radius > GLOW_REACH) return undefined
   if (!isInt(strength) || strength < 1 || strength > 100) return undefined
-  return { style, radius, strength }
+  return { style: style as GlowStyle, radius, strength }
 }
 
 /** A glow in its wire form, for `extra.glow`. */
@@ -73,7 +73,11 @@ export function glowWire(g: Glow): GlowWire {
   return [g.style, g.radius, g.strength]
 }
 
-/** Who is drawing: an avatar ignores both fields (§3.3). */
+/**
+ * Who is drawing: an avatar ignores both fields (§3.3), in its own payload and
+ * in every object it places, so a caller drawing an avatar's parts passes
+ * `{ avatar: true }` for each of them too.
+ */
 export interface LookContext {
   avatar?: boolean
 }
@@ -117,7 +121,8 @@ function withExtra<T extends Partial<Pick<ShardModel, 'extra'>>>(s: T, extra: Re
 /**
  * `s` with its point size set, in ticks, or removed when `ticks` is undefined
  * (the reader's own size). A value that is not a valid point size removes the
- * field, so a publisher never writes a malformed one. The mode is not touched:
+ * field, so a publisher never writes a malformed one: a caller rounds a
+ * slider's value to whole ticks first, or a fractional value clears the size. The mode is not touched:
  * the field is kept in every mode and drawn in `points`.
  */
 export function withPointSize<T extends Partial<Pick<ShardModel, 'extra'>>>(s: T, ticks: number | undefined): T {
@@ -125,7 +130,7 @@ export function withPointSize<T extends Partial<Pick<ShardModel, 'extra'>>>(s: T
   return withExtra(s, setExtra(s.extra, 'pointsize', v))
 }
 
-/** `s` with its glow set, or removed when `glow` is undefined or not a valid glow. */
+/** `s` with its glow set, or removed when `glow` is undefined or not a valid glow (round radius and strength first). */
 export function withGlow<T extends Partial<Pick<ShardModel, 'extra'>>>(s: T, glow: Glow | undefined): T {
   const v = glow ? readGlow(glowWire(glow)) : undefined
   return withExtra(s, setExtra(s.extra, 'glow', v ? glowWire(v) : undefined))

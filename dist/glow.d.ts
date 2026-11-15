@@ -51,7 +51,11 @@ export declare function readPointSize(raw: unknown): number | undefined;
 export declare function readGlow(raw: unknown): Glow | undefined;
 /** A glow in its wire form, for `extra.glow`. */
 export declare function glowWire(g: Glow): GlowWire;
-/** Who is drawing: an avatar ignores both fields (§3.3). */
+/**
+ * Who is drawing: an avatar ignores both fields (§3.3), in its own payload and
+ * in every object it places, so a caller drawing an avatar's parts passes
+ * `{ avatar: true }` for each of them too.
+ */
 export interface LookContext {
     avatar?: boolean;
 }
@@ -72,11 +76,12 @@ export declare function drawnGlow(s: Looked, ctx?: LookContext): Glow | undefine
 /**
  * `s` with its point size set, in ticks, or removed when `ticks` is undefined
  * (the reader's own size). A value that is not a valid point size removes the
- * field, so a publisher never writes a malformed one. The mode is not touched:
+ * field, so a publisher never writes a malformed one: a caller rounds a
+ * slider's value to whole ticks first, or a fractional value clears the size. The mode is not touched:
  * the field is kept in every mode and drawn in `points`.
  */
 export declare function withPointSize<T extends Partial<Pick<ShardModel, 'extra'>>>(s: T, ticks: number | undefined): T;
-/** `s` with its glow set, or removed when `glow` is undefined or not a valid glow. */
+/** `s` with its glow set, or removed when `glow` is undefined or not a valid glow (round radius and strength first). */
 export declare function withGlow<T extends Partial<Pick<ShardModel, 'extra'>>>(s: T, glow: Glow | undefined): T;
 /**
  * The style an editor suggests for a color, as the owner described it: a

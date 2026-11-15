@@ -14,7 +14,7 @@ const wire = (more: Record<string, unknown>) => JSON.parse(JSON.stringify({ ...t
 
 // Every kind of value in the DECK-0003 §1.15 and §1.16 tables, one to one
 // with sno-reference.py drawn_pointsize and drawn_glow.
-const NOT_INTEGERS = [0.5, 120.5, '120', true, false, null, [120], {}, { v: 120 }]
+const NOT_INTEGERS = [0.5, 120.5, NaN, Infinity, -Infinity, '120', true, false, null, [120], {}, { v: 120 }]
 
 describe('point size (DECK-0003 §1.15)', () => {
   it('reads a whole number of ticks from 0 to 7680', () => {
@@ -52,7 +52,7 @@ describe('glow (DECK-0003 §1.16)', () => {
       [], ['fog'], ['fog', 240], ['fog', 240, 35, 0],
       ['Light', 240, 35], ['FOG', 240, 35], ['smog', 240, 35], ['haze', 240, 35], [1, 240, 35], [null, 240, 35],
       ['fog', 0, 35], ['fog', -1, 35], ['fog', GLOW_REACH + 1, 35], ['fog', 240.5, 35], ['fog', '240', 35], ['fog', null, 35],
-      ['fog', 240, 0], ['fog', 240, -1], ['fog', 240, 101], ['fog', 240, 35.5], ['fog', 240, '35'], ['fog', 240, true],
+      ['fog', NaN, 35], ['fog', Infinity, 35], ['fog', 240, NaN], ['fog', 240, 0], ['fog', 240, -1], ['fog', 240, 101], ['fog', 240, 35.5], ['fog', 240, '35'], ['fog', 240, true],
     ]
     for (const b of bad) expect(readGlow(b), JSON.stringify(b)).toBeUndefined()
   })

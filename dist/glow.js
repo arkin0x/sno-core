@@ -38,13 +38,13 @@ export function readGlow(raw) {
     if (!Array.isArray(raw) || raw.length !== 3)
         return undefined;
     const [style, radius, strength] = raw;
-    if (style !== 'light' && style !== 'fog')
+    if (!GLOW_STYLES.includes(style))
         return undefined;
     if (!isInt(radius) || radius < 1 || radius > GLOW_REACH)
         return undefined;
     if (!isInt(strength) || strength < 1 || strength > 100)
         return undefined;
-    return { style, radius, strength };
+    return { style: style, radius, strength };
 }
 /** A glow in its wire form, for `extra.glow`. */
 export function glowWire(g) {
@@ -87,14 +87,15 @@ function withExtra(s, extra) {
 /**
  * `s` with its point size set, in ticks, or removed when `ticks` is undefined
  * (the reader's own size). A value that is not a valid point size removes the
- * field, so a publisher never writes a malformed one. The mode is not touched:
+ * field, so a publisher never writes a malformed one: a caller rounds a
+ * slider's value to whole ticks first, or a fractional value clears the size. The mode is not touched:
  * the field is kept in every mode and drawn in `points`.
  */
 export function withPointSize(s, ticks) {
     const v = readPointSize(ticks);
     return withExtra(s, setExtra(s.extra, 'pointsize', v));
 }
-/** `s` with its glow set, or removed when `glow` is undefined or not a valid glow. */
+/** `s` with its glow set, or removed when `glow` is undefined or not a valid glow (round radius and strength first). */
 export function withGlow(s, glow) {
     const v = glow ? readGlow(glowWire(glow)) : undefined;
     return withExtra(s, setExtra(s.extra, 'glow', v ? glowWire(v) : undefined));
