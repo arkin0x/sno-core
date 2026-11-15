@@ -32,12 +32,23 @@ later version learns a field, `normalizeStored` lifts it out of `extra` for
 models saved before, so call it on every model you load from storage. A copy
 that should carry the shape alone drops `extra`.
 
-**Opacity.** `ShardModel.opacity` is the payload's `opacity`, a whole percent 1
+**Opacity.** `ShardModel.opacity` is the payload's `opacity`, a whole percent 0
 to 99 (absent or 100 is fully opaque, and is never written). A malformed value
 reads as opaque rather than refusing the object. `drawnOpacity(model)` is what a
-renderer multiplies by: the percent as a fraction, never below
-`OPACITY_FLOOR` (10%). A placed object uses its own, never its parent's, and an
-avatar ignores it (DECK-0003 §1.11).
+renderer multiplies the object's faces, lines and points by: the percent as a
+fraction, with no floor since 0.1.29, so 0 draws nothing of the object's own.
+It never multiplies the glow. A placed object uses its own, never its parent's,
+and an avatar ignores it (DECK-0003 §1.11).
+
+**Point size and glow.** `pointsize` and `glow` (DECK-0003 §1.15, §1.16) travel
+in `extra`, as `anim` and `constrain` do. `drawnPointSize(model, { avatar })`
+gives the width of each point in ticks of the object's lattice (0 means no
+points), and `drawnGlow(model, { avatar })` gives `{ style, radius, strength }`
+with `style` `light` or `fog`, the radius in ticks and the strength a percent.
+Both are undefined outside `points` mode, for an avatar, and for a malformed
+value, which never refuses the object. `withPointSize` and `withGlow` set or
+clear them, and never write a malformed value. `suggestGlowStyle(rgb)` is the
+editor's first guess: light for a bright color, fog for a dark one.
 
 **Carried objects.** `ShardModel.objects` is the payload's `objects`
 (DECK-0003 §1.10): the payloads of placed objects that travel inside the

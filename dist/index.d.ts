@@ -8,6 +8,7 @@
 export * from './clip.js';
 export * from './feed.js';
 export * from './fingerprint.js';
+export * from './glow.js';
 export * from './gltf.js';
 export { hsvToRgb, rgbToHsv, type Hsv } from './hsv.js';
 export * from './importFile.js';

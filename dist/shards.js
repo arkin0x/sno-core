@@ -394,29 +394,33 @@ function readPart(e, refCount, mirror) {
     // `0 - z`, not `-z`: see toRender.
     return { ref, at: mirror ? [x, y, 0 - z] : [x, y, z], turn: mirror ? mirrorTurn(turn) : turn, step };
 }
-/** The least opacity an object is drawn at, in percent: nothing is ever wholly invisible (DECK-0003 §1.11). */
-export const OPACITY_FLOOR = 10;
 /**
  * The `opacity` a payload carries, or undefined for fully opaque.
  *
- * A malformed value (not an integer, outside 1..100, null, a string) is
+ * A malformed value (not an integer, outside 0..100, null, a string) is
  * repaired to opaque rather than refused, as `extent` is repaired (§1.11):
  * opaque is always a correct way to draw an object, so a bad value costs the
  * author their translucency and nothing else. 100 reads as absent too, so a
- * model only ever holds 1 to 99.
+ * model only ever holds 0 to 99. `-0` is the integer 0 (JSON has one zero).
+ *
+ * Until 0.1.29 the range was 1 to 100 with a floor of 10, and 0 was malformed.
+ * The owner ruled 0 to 100 on 2026-11-15, with no floor: at 0 an object draws
+ * nothing of its own, so that its glow can be cast without a point.
  */
 export function readOpacity(raw) {
-    return Number.isInteger(raw) && raw >= 1 && raw < 100 ? raw : undefined;
+    return Number.isInteger(raw) && raw >= 0 && raw < 100 ? raw + 0 : undefined;
 }
 /**
- * The opacity to draw `s` at, as a fraction from 0.1 to 1: its own percent
- * with the floor applied, or 1 when it has none. A placed object's comes from
- * its own model, never from the object that places it (§1.10), and a reader
- * drawing an avatar ignores it altogether (§3.3).
+ * The opacity to draw `s` at, as a fraction from 0 to 1: its own percent, or
+ * 1 when it has none. 0 draws nothing of the object's own: no faces, edges or
+ * points. It never reaches the object's glow, whose strength is its own
+ * (glow.ts, DECK-0003 §1.16). A placed object's comes from its own model,
+ * never from the object that places it (§1.10), and a reader drawing an avatar
+ * ignores it altogether (§3.3).
  */
 export function drawnOpacity(s) {
     const o = readOpacity(s.opacity);
-    return o === undefined ? 1 : Math.max(o, OPACITY_FLOOR) / 100;
+    return o === undefined ? 1 : o / 100;
 }
 export function toPayload(s) {
     const vertices = s.vertices.map(flipZ);

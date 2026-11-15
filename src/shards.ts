@@ -117,9 +117,9 @@ export interface ShardModel {
   /**
    * How opaque the object is drawn, a whole percent (DECK-0003 §1.11). Absent
    * means fully opaque, which is every object written before the field
-   * existed. A model from `fromPayload` or `normalizeStored` holds 1 to 99 or
-   * nothing (100 and malformed values read as absent); 1 to 9 are kept as
-   * written and drawn at the floor by `drawnOpacity`.
+   * existed. A model from `fromPayload` or `normalizeStored` holds 0 to 99 or
+   * nothing (100 and malformed values read as absent). At 0 the object draws
+   * nothing of its own, and its glow (glow.ts) still shows.
    */
   opacity?: number
   /**
@@ -234,7 +234,7 @@ export interface ShardPayload {
    * default and not the same as colour 0 (DECK-0003 §1.4a).
    */
   facecolors?: number[]
-  /** A whole percent 1 to 100; absent means 100 (DECK-0003 §1.11). Omitted when 100. */
+  /** A whole percent 0 to 100; absent means 100 (DECK-0003 §1.11). Omitted when 100. */
   opacity?: number
   /** Present and true when the shard stands on the Earth where it is hidden (lib/pose.ts). Absent otherwise. */
   up?: true
@@ -609,31 +609,34 @@ function readPart(e: unknown, refCount: number, mirror: boolean): Part | null {
   return { ref, at: mirror ? [x, y, 0 - z] : [x, y, z], turn: mirror ? mirrorTurn(turn) : turn, step }
 }
 
-/** The least opacity an object is drawn at, in percent: nothing is ever wholly invisible (DECK-0003 §1.11). */
-export const OPACITY_FLOOR = 10
-
 /**
  * The `opacity` a payload carries, or undefined for fully opaque.
  *
- * A malformed value (not an integer, outside 1..100, null, a string) is
+ * A malformed value (not an integer, outside 0..100, null, a string) is
  * repaired to opaque rather than refused, as `extent` is repaired (§1.11):
  * opaque is always a correct way to draw an object, so a bad value costs the
  * author their translucency and nothing else. 100 reads as absent too, so a
- * model only ever holds 1 to 99.
+ * model only ever holds 0 to 99. `-0` is the integer 0 (JSON has one zero).
+ *
+ * Until 0.1.29 the range was 1 to 100 with a floor of 10, and 0 was malformed.
+ * The owner ruled 0 to 100 on 2026-11-15, with no floor: at 0 an object draws
+ * nothing of its own, so that its glow can be cast without a point.
  */
 export function readOpacity(raw: unknown): number | undefined {
-  return Number.isInteger(raw) && (raw as number) >= 1 && (raw as number) < 100 ? (raw as number) : undefined
+  return Number.isInteger(raw) && (raw as number) >= 0 && (raw as number) < 100 ? (raw as number) + 0 : undefined
 }
 
 /**
- * The opacity to draw `s` at, as a fraction from 0.1 to 1: its own percent
- * with the floor applied, or 1 when it has none. A placed object's comes from
- * its own model, never from the object that places it (§1.10), and a reader
- * drawing an avatar ignores it altogether (§3.3).
+ * The opacity to draw `s` at, as a fraction from 0 to 1: its own percent, or
+ * 1 when it has none. 0 draws nothing of the object's own: no faces, edges or
+ * points. It never reaches the object's glow, whose strength is its own
+ * (glow.ts, DECK-0003 §1.16). A placed object's comes from its own model,
+ * never from the object that places it (§1.10), and a reader drawing an avatar
+ * ignores it altogether (§3.3).
  */
 export function drawnOpacity(s: Pick<ShardModel, 'opacity'>): number {
   const o = readOpacity(s.opacity)
-  return o === undefined ? 1 : Math.max(o, OPACITY_FLOOR) / 100
+  return o === undefined ? 1 : o / 100
 }
 
 export function toPayload(s: ShardModel): ShardPayload {
