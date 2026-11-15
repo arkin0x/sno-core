@@ -39,6 +39,29 @@ renderer multiplies by: the percent as a fraction, never below
 `OPACITY_FLOOR` (10%). A placed object uses its own, never its parent's, and an
 avatar ignores it (DECK-0003 §1.11).
 
+**Motion.** `anim` (DECK-0003 §1.14) rides in `ShardModel.extra`, like
+`constrain`, so a model from any version of this package keeps it through an
+edit. `animOf(model)` reads it as a reader must: the first four entries, each
+malformed, unknown or too-fast entry ignored while the rest apply, never a
+reason to refuse the object. `phaseAt(motion, t)` is the phase at Unix time
+`t`, good to about 1e-15 of a cycle at today's 1.8 billion seconds;
+`motionPose` and `composeRender` turn the phases into one matrix in the
+render frame, ready to sit above a mesh drawn with `toRender` and no pose (a
+mesh drawn with a §1.7 pose turn G takes G · A · Gᵀ, so the motion still
+comes before the pose). `withAnim(model, raw)` writes the canonical form (c
+over b in lowest terms, a forward swing or slide, path weights with no common
+factor) and drops the field when nothing is left. `toPayload` writes
+`extra.anim` exactly as it is held, so an editor that changes motions writes
+them through `withAnim`, and one that never touches them passes on motion
+words a later version may add. `animEdit` holds an
+editor's rules in ticks and the §2 frame: presets with familiar names (SPIN
+writes `turn`), speed in cycles a minute, the flicker warning, and every edit
+clamped with a plain message. `animClock` holds the clock rules: correct the
+device clock only past 2 seconds (`correctionFor`), and ease into a corrected
+time the shorter way round (`stepPhases`). Under reduced motion it sets
+`held`, and the client then draws the object as written with no motion
+matrix: phase 0 is not the rest pose of an orbit or a path. An avatar ignores `anim`; that is the client's to apply.
+
 **Carried objects.** `ShardModel.objects` is the payload's `objects`
 (DECK-0003 §1.10): the payloads of placed objects that travel inside the
 object that places them instead of as events of their own, keyed by the
@@ -82,6 +105,9 @@ point order, and omits it when empty.
 | `outline` | The edges of a set of faces |
 | `fingerprint` | An object's shape as canonical text, one letter-only token per triangle, for a similarity fingerprint such as Fanfares' `X` tag: the same under vertex and face order, winding, translation and recoloring, different under rotation, scale and mirroring |
 | `parts` | One object placing others (DECK-0003 §1.10): resolving placements through a client's fetch, with the depth, loop and placeholder rules, and where each one stands |
+| `anim` | Motion (DECK-0003 §1.14): reading `anim` as a reader must, the phase at a Unix time, each motion's pose, the composed matrix, and the canonical writer |
+| `animEdit` | A motion editor's rules, in ticks and the §2 frame: presets, speed in cycles a minute, the flicker warning, edits that only ever hold what a writer may write |
+| `animClock` | The reader's clock (§1.14): when to correct the device clock, and the catch-up ease when the correction changes |
 | `clip` | Cutting a mesh to a box, and the color interpolated across the cut |
 | `hsv` | Hue, saturation and brightness |
 | `scale` | A gibson count as a human distance, and the size of a cell |
