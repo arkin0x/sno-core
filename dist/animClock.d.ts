@@ -20,8 +20,11 @@
  * 2. Catching up without a jump. When the correction changes, each motion
  *    eases from the phase it is drawn at to its true phase, the shorter way
  *    round, over L = min(3, max(0.5, |e| × P)) seconds (stepPhases). Under
- *    reduced motion every motion is drawn at phase 0, the rest pose, unless
- *    the viewer chose the time by hand (an editor's scrub).
+ *    reduced motion the object is drawn as written, its rest pose, unless the
+ *    viewer chose the time by hand (an editor's scrub): stepPhases sets
+ *    `held`, and the caller then draws no motion at all. Phase 0 is not the
+ *    rest pose for every motion (an orbit sits at its radius, a path at its
+ *    last waypoint), so a caller MUST NOT compose `shown` while `held`.
  *
  * ONOSENDAI's lib/worldClock.ts and scene/animMotion.ts (ONOSENDAI #735) hold
  * the same rules with the timers and the scene around them.
@@ -83,7 +86,7 @@ export declare function serverTimeOf(headers: {
     serverMs: number;
     resolutionMs: number;
 } | null;
-/** One object's phase state, allocated once per drawn object. */
+/** One object's phase state, allocated once per drawn object, for exactly as many motions as it draws. */
 export interface PhaseState {
     /** The phase each motion is drawn at this frame, in [0, 1). */
     shown: Float64Array;
@@ -92,7 +95,7 @@ export interface PhaseState {
     len: Float64Array;
     /** The clock version the phases were last worked from; -1 before the first frame. */
     version: number;
-    /** Whether reduced motion held the object at rest on the last frame. */
+    /** Reduced motion holds the object at rest: draw it as written (no motion matrix at all), never at `shown`. */
     held: boolean;
 }
 export declare function newPhaseState(n: number): PhaseState;
@@ -104,13 +107,15 @@ export declare function easeSeconds(err: number, period: number): number;
  * The phase each motion is drawn at, written into `st.shown`. Pure but for
  * `st`, where the eases live. Allocates nothing.
  *
- * - Reduced motion: phase 0 for every motion (`st.held`; a caller draws the
- *   object as written, §1.14), unless the reading is a time the viewer chose.
+ * - Reduced motion: `st.held`, and the caller draws the object as written
+ *   (§1.14) rather than at `shown`, unless the reading is a time the viewer
+ *   chose.
  * - Otherwise the true phase, eased into whenever the clock's version changed
- *   since the last frame or reduced motion was just turned off: the error
- *   wrapped the shorter way round, drawn as u − e × (1 − ease(τ)), τ running
- *   0 to 1 over easeSeconds(e, b / |c|).
- * - The first frame, and any time chosen by hand, draws the true pose at once.
+ *   since the last frame: the error wrapped the shorter way round, drawn as
+ *   u − e × (1 − ease(τ)), τ running 0 to 1 over easeSeconds(e, b / |c|).
+ * - The first frame, the first after reduced motion lets go (the object was
+ *   drawn as written, which is no phase to ease from), and any time chosen by
+ *   hand draw the true pose at once.
  */
 export declare function stepPhases(motions: readonly Motion[], r: ClockReading, reduced: boolean, st: PhaseState): void;
 //# sourceMappingURL=animClock.d.ts.map

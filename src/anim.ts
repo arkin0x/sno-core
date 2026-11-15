@@ -299,7 +299,9 @@ export function phaseAt(r: Rate, t: number): number {
 
 /** A motion's pose at phase u, written into `out`. */
 export function motionPose(m: Motion, u: number, out: MotionPose): MotionPose {
-  MOTIONS[m.word].pose(m, u, out)
+  // A motion made by hand with a word the table does not hold is held still, as a reader holds one.
+  if (knownMotion(m.word)) MOTIONS[m.word].pose(m, u, out)
+  else still(out)
   return out
 }
 
@@ -313,6 +315,12 @@ export function newPose(): MotionPose {
  * DECK-0003 §2 model frame, in ticks, first innermost. That frame is the
  * render frame times 120, so the result sits directly above a mesh drawn
  * there. `out` is written in place.
+ *
+ * It is the object's own motion, applied before anything poses the object.
+ * A client that draws a mesh already turned by a §1.7 pose (flatten(s, pose))
+ * puts G · A · Gᵀ above it, G the pose's turn, as ONOSENDAI's
+ * scene/animMotion.ts does, so the motion still comes first and the pose
+ * after (§1.14, Parts).
  */
 export function composeRender(poses: readonly MotionPose[], count: number, out: Float64Array | number[]): void {
   // A 3x3 linear part L (row-major, model frame) and translation T (ticks): p -> L p + T.

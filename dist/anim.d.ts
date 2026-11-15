@@ -126,6 +126,12 @@ export declare function newPose(): MotionPose;
  * DECK-0003 §2 model frame, in ticks, first innermost. That frame is the
  * render frame times 120, so the result sits directly above a mesh drawn
  * there. `out` is written in place.
+ *
+ * It is the object's own motion, applied before anything poses the object.
+ * A client that draws a mesh already turned by a §1.7 pose (flatten(s, pose))
+ * puts G · A · Gᵀ above it, G the pose's turn, as ONOSENDAI's
+ * scene/animMotion.ts does, so the motion still comes first and the pose
+ * after (§1.14, Parts).
  */
 export declare function composeRender(poses: readonly MotionPose[], count: number, out: Float64Array | number[]): void;
 /** Greatest common divisor of two nonnegative integers. */

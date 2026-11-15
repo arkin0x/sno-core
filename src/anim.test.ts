@@ -144,6 +144,13 @@ describe('the phase', () => {
   })
 })
 
+describe('a motion made by hand', () => {
+  it('with a word the table does not hold is held still, never a throw', () => {
+    const odd = { word: 'toString', axis: 1, p: [], pts: [], c: 1, b: 1, phi: 0 } as Motion
+    expect(motionPose(odd, 0.3, newPose())).toEqual({ axis: -1, angle: 0, t: [0, 0, 0] })
+  })
+})
+
 describe('writing', () => {
   it('writes canonically: c/b in lowest terms, a forward swing or slide, path weights with no common factor', () => {
     expect(writeMotion(m(['turn', 'y', 3, 60, 0]))).toEqual(['turn', 'y', 1, 20, 0])

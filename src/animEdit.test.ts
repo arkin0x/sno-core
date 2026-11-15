@@ -90,6 +90,11 @@ describe('speed: cycles a minute <-> c cycles every b seconds, lowest terms', ()
     expect(rawOf(setSpeed(seven, 0, 8.57).list)).toEqual([['turn', 'y', 1, 7, 0]])
     expect(rawOf(setSpeed(seven, 0, 8.6).list)).toEqual([['turn', 'y', 43, 300, 0]])
   })
+  it('a cleared speed box changes nothing; a bad axis changes nothing', () => {
+    const list = [m(['turn', 'y', 1, 20, 0])]
+    expect(setSpeed(list, 0, NaN)).toEqual({ list })
+    expect(setAxis(list, 0, 3 as never).list).toEqual(list)
+  })
   it('a swing or a slide has no REVERSE (the field writes them forward)', () => {
     expect(['turn', 'swing', 'slide', 'orbit', 'lift', 'path'].filter((word) => reversible({ word }))).toEqual(['turn', 'orbit', 'lift', 'path'])
   })

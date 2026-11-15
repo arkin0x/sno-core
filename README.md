@@ -44,17 +44,23 @@ avatar ignores it (DECK-0003 §1.11).
 edit. `animOf(model)` reads it as a reader must: the first four entries, each
 malformed, unknown or too-fast entry ignored while the rest apply, never a
 reason to refuse the object. `phaseAt(motion, t)` is the phase at Unix time
-`t`, exact at today's 1.8 billion seconds; `motionPose` and `composeRender`
-turn the phases into one matrix in the render frame, ready to sit above a
-mesh drawn with `toRender`. `withAnim(model, raw)` writes the canonical form
-(c over b in lowest terms, a forward swing or slide, path weights with no
-common factor) and drops the field when nothing is left. `animEdit` holds an
+`t`, good to about 1e-15 of a cycle at today's 1.8 billion seconds;
+`motionPose` and `composeRender` turn the phases into one matrix in the
+render frame, ready to sit above a mesh drawn with `toRender` and no pose (a
+mesh drawn with a §1.7 pose turn G takes G · A · Gᵀ, so the motion still
+comes before the pose). `withAnim(model, raw)` writes the canonical form (c
+over b in lowest terms, a forward swing or slide, path weights with no common
+factor) and drops the field when nothing is left. `toPayload` writes
+`extra.anim` exactly as it is held, so an editor that changes motions writes
+them through `withAnim`, and one that never touches them passes on motion
+words a later version may add. `animEdit` holds an
 editor's rules in ticks and the §2 frame: presets with familiar names (SPIN
 writes `turn`), speed in cycles a minute, the flicker warning, and every edit
 clamped with a plain message. `animClock` holds the clock rules: correct the
 device clock only past 2 seconds (`correctionFor`), and ease into a corrected
-time the shorter way round (`stepPhases`), with the rest pose under reduced
-motion. An avatar ignores `anim`; that is the client's to apply.
+time the shorter way round (`stepPhases`). Under reduced motion it sets
+`held`, and the client then draws the object as written with no motion
+matrix: phase 0 is not the rest pose of an orbit or a path. An avatar ignores `anim`; that is the client's to apply.
 
 **Carried objects.** `ShardModel.objects` is the payload's `objects`
 (DECK-0003 §1.10): the payloads of placed objects that travel inside the

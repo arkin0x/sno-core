@@ -176,14 +176,15 @@ export function moveMotion(list: readonly Motion[], i: number, dir: 1 | -1): Edi
 /** Motion i about (or along) another axis, 0 x, 1 y, 2 z. A path has none. */
 export function setAxis(list: readonly Motion[], i: number, axis: 0 | 1 | 2): Edited {
   const m = list[i]
-  if (!m || m.axis < 0) return { list: [...list] }
+  if (!m || m.axis < 0 || (axis !== 0 && axis !== 1 && axis !== 2)) return { list: [...list] }
   return { list: replace(list, i, { ...copy(m), axis }) }
 }
 
 /** Motion i at a speed in cycles a minute (its sign the direction), stored as c/b in lowest terms. */
 export function setSpeed(list: readonly Motion[], i: number, perMin: number): Edited {
   const m = list[i]
-  if (!m) return { list: [...list] }
+  // A cleared or unreadable box changes nothing (Infinity still clamps to the top speed, in rateFor).
+  if (!m || Number.isNaN(perMin)) return { list: [...list] }
   // The speed shown, typed back: the rate it came from is kept (1 every 7 s shows as 8.57).
   const sign = perMin < 0 || Object.is(perMin, -0) ? -1 : 1
   if (sign === Math.sign(m.c) && showNumber(Math.abs(perMin)) === showNumber(Math.abs(perMinute(m)))) return { list: [...list] }

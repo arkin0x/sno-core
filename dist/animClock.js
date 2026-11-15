@@ -20,8 +20,11 @@
  * 2. Catching up without a jump. When the correction changes, each motion
  *    eases from the phase it is drawn at to its true phase, the shorter way
  *    round, over L = min(3, max(0.5, |e| × P)) seconds (stepPhases). Under
- *    reduced motion every motion is drawn at phase 0, the rest pose, unless
- *    the viewer chose the time by hand (an editor's scrub).
+ *    reduced motion the object is drawn as written, its rest pose, unless the
+ *    viewer chose the time by hand (an editor's scrub): stepPhases sets
+ *    `held`, and the caller then draws no motion at all. Phase 0 is not the
+ *    rest pose for every motion (an orbit sits at its radius, a path at its
+ *    last waypoint), so a caller MUST NOT compose `shown` while `held`.
  *
  * ONOSENDAI's lib/worldClock.ts and scene/animMotion.ts (ONOSENDAI #735) hold
  * the same rules with the timers and the scene around them.
@@ -107,13 +110,15 @@ export function easeSeconds(err, period) {
  * The phase each motion is drawn at, written into `st.shown`. Pure but for
  * `st`, where the eases live. Allocates nothing.
  *
- * - Reduced motion: phase 0 for every motion (`st.held`; a caller draws the
- *   object as written, §1.14), unless the reading is a time the viewer chose.
+ * - Reduced motion: `st.held`, and the caller draws the object as written
+ *   (§1.14) rather than at `shown`, unless the reading is a time the viewer
+ *   chose.
  * - Otherwise the true phase, eased into whenever the clock's version changed
- *   since the last frame or reduced motion was just turned off: the error
- *   wrapped the shorter way round, drawn as u − e × (1 − ease(τ)), τ running
- *   0 to 1 over easeSeconds(e, b / |c|).
- * - The first frame, and any time chosen by hand, draws the true pose at once.
+ *   since the last frame: the error wrapped the shorter way round, drawn as
+ *   u − e × (1 − ease(τ)), τ running 0 to 1 over easeSeconds(e, b / |c|).
+ * - The first frame, the first after reduced motion lets go (the object was
+ *   drawn as written, which is no phase to ease from), and any time chosen by
+ *   hand draw the true pose at once.
  */
 export function stepPhases(motions, r, reduced, st) {
     const n = motions.length;
@@ -127,9 +132,9 @@ export function stepPhases(motions, r, reduced, st) {
         st.version = r.version;
         return;
     }
-    const first = st.version === -1;
-    const changed = !first && !r.chosen && (st.version !== r.version || st.held);
-    if (r.chosen)
+    const fresh = st.version === -1 || st.held;
+    const changed = !fresh && !r.chosen && st.version !== r.version;
+    if (r.chosen || fresh)
         for (let i = 0; i < n; i++)
             st.len[i] = 0;
     for (let i = 0; i < n; i++) {
