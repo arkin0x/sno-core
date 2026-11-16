@@ -9,6 +9,7 @@ export * from './anim.js';
 export * from './animClock.js';
 export * from './animEdit.js';
 export * from './clip.js';
+export * from './eye.js';
 export * from './feed.js';
 export * from './fingerprint.js';
 export * from './glow.js';

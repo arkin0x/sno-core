@@ -146,7 +146,9 @@ export interface ShardModel {
      * everyone who reads the object after them. Carried here, it travels
      * through every edit untouched, and the newer reader still finds it.
      *
-     * Never read, only carried. Not validated, because this library cannot know
+     * Carried, and read only by the modules that know a field's meaning
+     * (glow.ts reads `pointsize` and `glow`, anim.ts `anim`, eye.ts `eye`). Not
+     * validated here, because this library cannot know
      * what a field it does not know should look like; a newer reader validates
      * it as its own version of the format says. Carried unchanged even when the
      * geometry is edited, which is right for a setting that does not depend on

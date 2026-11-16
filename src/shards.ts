@@ -154,7 +154,9 @@ export interface ShardModel {
    * everyone who reads the object after them. Carried here, it travels
    * through every edit untouched, and the newer reader still finds it.
    *
-   * Never read, only carried. Not validated, because this library cannot know
+   * Carried, and read only by the modules that know a field's meaning
+   * (glow.ts reads `pointsize` and `glow`, anim.ts `anim`, eye.ts `eye`). Not
+   * validated here, because this library cannot know
    * what a field it does not know should look like; a newer reader validates
    * it as its own version of the format says. Carried unchanged even when the
    * geometry is edited, which is right for a setting that does not depend on
@@ -361,9 +363,24 @@ export function unknownFields(p: object): Record<string, unknown> | undefined {
   return entries.length ? Object.fromEntries(entries) : undefined
 }
 
+/** `extra` with a version 1 payload's `eye` Z negated into the version 2 frame (eye.ts); anything else as it is. */
+function v1Eye(extra: Record<string, unknown> | undefined, v: unknown): Record<string, unknown> | undefined {
+  const eye = extra?.eye
+  // Only an eye that reads as one turns; anything else is carried as it came (and left off the wire, carried()).
+  if (v !== 1 || !extra || !wellFormedEye(eye)) return extra
+  return { ...extra, eye: [eye[0] + 0, eye[1] + 0, -eye[2] + 0] }
+}
+
 /** The carried fields to write: `extra` without anything this library computes. Not copied again. */
 function carried(extra: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined))
+  // A publisher never writes a malformed `eye` (DECK-0003 §1.17): one this
+  // library cannot read as an eye is left off the wire rather than passed on.
+  return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined && (k !== 'eye' || wellFormedEye(v))))
+}
+
+/** Three integers, each -7680..7680: an `eye` as §1.17 reads it (eye.ts readEye, which imports this module). */
+function wellFormedEye(v: unknown): v is [number, number, number] {
+  return Array.isArray(v) && v.length === 3 && v.every((c) => Number.isInteger(c) && Math.abs(c as number) <= 64 * TICKS_PER_UNIT)
 }
 
 /** Default half-width of the build grid, in units; each shard keeps its own (`extent`). */
@@ -901,7 +918,10 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     parts = []
     for (const e of p.parts) { const part = readPart(e, refs?.length ?? 0, p.v === WIRE_VERSION); if (!part) return null; parts.push(part) }
   }
-  const extra = unknownFields(p)
+  // An `eye` (eye.ts, §1.17) is in the payload's frame, as the vertices are:
+  // a version 1 payload's Z points the other way (§2), so its eye is carried
+  // in the version 2 frame, the one `extra` is written back out in.
+  const extra = v1Eye(unknownFields(p), p.v)
   const opacity = readOpacity(p.opacity)
   // §1.10: read, never a reason to refuse (rule 16); the entries are checked one
   // at a time when a placement draws from them (parts.ts).
