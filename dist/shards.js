@@ -152,6 +152,13 @@ export function unknownFields(p) {
     }
     return entries.length ? Object.fromEntries(entries) : undefined;
 }
+/** `extra` with a version 1 payload's `eye` Z negated into the version 2 frame (eye.ts); anything else as it is. */
+function v1Eye(extra, v) {
+    const eye = extra?.eye;
+    if (v !== 1 || !extra || !Array.isArray(eye) || eye.length !== 3 || typeof eye[2] !== 'number')
+        return extra;
+    return { ...extra, eye: [eye[0], eye[1], -eye[2] + 0] };
+}
 /** The carried fields to write: `extra` without anything this library computes. Not copied again. */
 function carried(extra) {
     return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined));
@@ -744,7 +751,10 @@ export function fromPayload(raw, id, fetchedPalette) {
             parts.push(part);
         }
     }
-    const extra = unknownFields(p);
+    // An `eye` (eye.ts, §1.17) is in the payload's frame, as the vertices are:
+    // a version 1 payload's Z points the other way (§2), so its eye is carried
+    // in the version 2 frame, the one `extra` is written back out in.
+    const extra = v1Eye(unknownFields(p), p.v);
     const opacity = readOpacity(p.opacity);
     // §1.10: read, never a reason to refuse (rule 16); the entries are checked one
     // at a time when a placement draws from them (parts.ts).

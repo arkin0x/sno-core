@@ -13,6 +13,7 @@ export * from './clip.js'
 export * from './feed.js'
 export * from './fingerprint.js'
 export * from './glow.js'
+export * from './eye.js'
 export * from './gltf.js'
 // Named rather than starred: hsv.ts and snoPalette.ts each define `Rgb`, the
 // same three numbers, and neither should have to import the other to say so.

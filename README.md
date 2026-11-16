@@ -40,6 +40,18 @@ fraction, with no floor since 0.1.30, so 0 draws nothing of the object's own.
 It never multiplies the glow. A placed object uses its own, never its parent's,
 and an avatar ignores it (DECK-0003 §1.11).
 
+**Eye.** `eye` (DECK-0003 §1.17) travels in `extra` too: where a viewer looks
+from when it wears the object as an avatar and sees in first person, three
+whole numbers of ticks in the payload's frame. `drawnEye(model)` gives the
+written eye when it is well formed, else the automatic eye, one eighth of the
+avatar's height below its top and straight above the origin
+(`top - floor((top - bottom) / 8)` over its vertices' Y ticks; the origin for
+no vertices). `readEye` reads a raw value (undefined when malformed, never a
+refusal), `autoEye` is the automatic eye alone, `eyeChosen` tells AUTO from
+CHOSEN, and `withEye` sets or clears it and never writes a malformed value.
+`[0, 0, 0]` is a choice: the old eye at the origin. A version 1 payload's eye
+is read into the version 2 frame with its vertices.
+
 **Point size and glow.** `pointsize` and `glow` (DECK-0003 §1.15, §1.16) travel
 in `extra`, as `anim` and `constrain` do. `drawnPointSize(model, { avatar })`
 gives the width of each point in ticks of the object's lattice (0 means no
