@@ -380,9 +380,9 @@ function carried(extra: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined && (k !== 'eye' || wellFormedEye(v)) && (k !== 'face' || faceNameShape(v))))
 }
 
-/** A string shaped like a facing mode's name, `"path"`, `"upright"` or one a later revision adds: lowercase letters, digits and hyphens, from a letter (§1.18). */
+/** A string shaped like a facing mode's name, `"path"`, `"upright"` or one a later revision adds: 1 to 32 lowercase letters, digits and hyphens, from a letter (§1.18). */
 function faceNameShape(v: unknown): v is string {
-  return typeof v === 'string' && /^[a-z][a-z0-9-]*$/.test(v)
+  return typeof v === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(v)
 }
 
 /** Three integers, each -7680..7680: an `eye` as §1.17 reads it (eye.ts readEye, which imports this module). */

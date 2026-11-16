@@ -58,7 +58,7 @@ describe('face (DECK-0003 §1.18)', () => {
   })
 
   it('carries a name a later revision may add, so an older editor does not lose it', () => {
-    for (const later of ['level', 'bank-left', 'still2']) {
+    for (const later of ['level', 'bank-left', 'still2', 'a'.repeat(32)]) {
       const p = toPayload(shard({ face: later })) as unknown as Record<string, unknown>
       expect(p.face).toBe(later)
       expect(drawnFace(fromPayload(p as never, 'x')!)).toBe('path')
@@ -66,7 +66,7 @@ describe('face (DECK-0003 §1.18)', () => {
   })
 
   it('leaves off a string that could not be a name: another case, a space, empty', () => {
-    for (const bad of ['Upright', 'UPRIGHT', ' upright', '', '1st', 'up right']) {
+    for (const bad of ['Upright', 'UPRIGHT', ' upright', '', '1st', 'up right', 'a'.repeat(33)]) {
       expect((toPayload(shard({ face: bad })) as unknown as Record<string, unknown>).face, JSON.stringify(bad)).toBeUndefined()
     }
   })

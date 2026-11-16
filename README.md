@@ -65,8 +65,8 @@ turns only about it, keeping the heading on a move straight up or down.
 unknown (never a refusal); `readFace` reads a raw value; `withFace` sets it and
 leaves the field out for `"path"`. The turning itself is the client's, since
 only the client knows its viewer's up. A name a later revision adds is carried
-when the object is written back if it is shaped like a name (lowercase letters,
-digits and hyphens, from a letter); any other `face` is left off.
+when the object is written back if it is shaped like a name (1 to 32 lowercase
+letters, digits and hyphens, from a letter); any other `face` is left off.
 
 **Point size and glow.** `pointsize` and `glow` (DECK-0003 §1.15, §1.16) travel
 in `extra`, as `anim` and `constrain` do. `drawnPointSize(model, { avatar })`
