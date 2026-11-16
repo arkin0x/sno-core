@@ -164,7 +164,9 @@ function v1Eye(extra, v) {
 function carried(extra) {
     // A publisher never writes a malformed `eye` (DECK-0003 §1.17): one this
     // library cannot read as an eye is left off the wire rather than passed on.
-    return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined && (k !== 'eye' || wellFormedEye(v))));
+    // Nor a `face` that is not a string (§1.18); a name this version does not
+    // know is carried, since a later revision may define it.
+    return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined && (k !== 'eye' || wellFormedEye(v)) && (k !== 'face' || typeof v === 'string')));
 }
 /** Three integers, each -7680..7680: an `eye` as §1.17 reads it (eye.ts readEye, which imports this module). */
 function wellFormedEye(v) {
