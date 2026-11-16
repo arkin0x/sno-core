@@ -56,6 +56,18 @@ payload's frame (+Z toward the viewer), not the model's in-memory frame,
 which has Z negated: `eyeModelTicks(model)` gives it beside `ticksOf(vertex)`,
 and a renderer draws `drawnEye` as it is, without `toRender`.
 
+**Facing.** `face` (DECK-0003 §1.18) travels in `extra` too: how a worn avatar
+turns as it moves. `"path"`, the default, points the front (its -Z in the
+payload's frame) along the last move and tilts with it; `"upright"` keeps the
+top on the viewer's up, the up of the world as that viewer has turned it, and
+turns only about it, keeping the heading on a move straight up or down.
+`drawnFace(model)` gives the mode, `"path"` for anything absent, malformed or
+unknown (never a refusal); `readFace` reads a raw value; `withFace` sets it and
+leaves the field out for `"path"`. The turning itself is the client's, since
+only the client knows its viewer's up. A name a later revision adds is carried
+when the object is written back if it is shaped like a name (1 to 32 lowercase
+letters, digits and hyphens, from a letter); any other `face` is left off.
+
 **Point size and glow.** `pointsize` and `glow` (DECK-0003 §1.15, §1.16) travel
 in `extra`, as `anim` and `constrain` do. `drawnPointSize(model, { avatar })`
 gives the width of each point in ticks of the object's lattice (0 means no

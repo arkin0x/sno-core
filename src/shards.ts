@@ -155,7 +155,7 @@ export interface ShardModel {
    * through every edit untouched, and the newer reader still finds it.
    *
    * Carried, and read only by the modules that know a field's meaning
-   * (glow.ts reads `pointsize` and `glow`, anim.ts `anim`, eye.ts `eye`). Not
+   * (glow.ts reads `pointsize` and `glow`, anim.ts `anim`, eye.ts `eye`, face.ts `face`). Not
    * validated here, because this library cannot know
    * what a field it does not know should look like; a newer reader validates
    * it as its own version of the format says. Carried unchanged even when the
@@ -375,7 +375,14 @@ function v1Eye(extra: Record<string, unknown> | undefined, v: unknown): Record<s
 function carried(extra: Record<string, unknown>): Record<string, unknown> {
   // A publisher never writes a malformed `eye` (DECK-0003 §1.17): one this
   // library cannot read as an eye is left off the wire rather than passed on.
-  return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined && (k !== 'eye' || wellFormedEye(v))))
+  // Nor a `face` that could not be a mode's name (§1.18): a name this version
+  // does not know is carried, since a later revision may define it.
+  return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined && (k !== 'eye' || wellFormedEye(v)) && (k !== 'face' || faceNameShape(v))))
+}
+
+/** A string shaped like a facing mode's name, `"path"`, `"upright"` or one a later revision adds: 1 to 32 lowercase letters, digits and hyphens, from a letter (§1.18). */
+function faceNameShape(v: unknown): v is string {
+  return typeof v === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(v)
 }
 
 /** Three integers, each -7680..7680: an `eye` as §1.17 reads it (eye.ts readEye, which imports this module). */
