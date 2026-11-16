@@ -50,7 +50,11 @@ no vertices). `readEye` reads a raw value (undefined when malformed, never a
 refusal), `autoEye` is the automatic eye alone, `eyeChosen` tells AUTO from
 CHOSEN, and `withEye` sets or clears it and never writes a malformed value.
 `[0, 0, 0]` is a choice: the old eye at the origin. A version 1 payload's eye
-is read into the version 2 frame with its vertices.
+is read into the version 2 frame with its vertices, and a malformed eye is
+left off the wire when the object is written back. The eye is in the
+payload's frame (+Z toward the viewer), not the model's in-memory frame,
+which has Z negated: `eyeModelTicks(model)` gives it beside `ticksOf(vertex)`,
+and a renderer draws `drawnEye` as it is, without `toRender`.
 
 **Point size and glow.** `pointsize` and `glow` (DECK-0003 §1.15, §1.16) travel
 in `extra`, as `anim` and `constrain` do. `drawnPointSize(model, { avatar })`

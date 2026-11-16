@@ -14,6 +14,14 @@
  * never a reason to refuse the object. `[0, 0, 0]` is a choice, not a
  * spelling of absent: the old eye at the origin, on purpose.
  *
+ * The frame. An eye is in the payload's own frame, version 2's: +Z toward the
+ * viewer. That is NOT the frame a ShardModel's vertices and `parts` are held
+ * in (shards.ts negates Z on the way in), so an eye and a vertex at the same
+ * wire point differ in the sign of Z here. `eyeModelTicks` gives the eye in
+ * the model's own frame, beside `ticksOf(vertex)`; the payload frame times
+ * 1/120 is already the render frame (`toRender` of model coordinates), so a
+ * renderer uses `drawnEye` as it is and never passes it through `toRender`.
+ *
  * The eye is not held to the avatar's shape: it may sit anywhere within the
  * 64-unit bound, so an eye behind and above the avatar gives a view from
  * behind. A client keeps the camera short of walls; that is the client's.
@@ -34,8 +42,11 @@ const isInt = (n: unknown): n is number => Number.isInteger(n)
 /**
  * An `eye` value as §1.17 reads it: exactly three JSON integers, each from
  * -7680 to 7680, or undefined, which means the automatic eye. Null, a
- * fraction, two or four elements, a string, an object or a number out of
- * range is undefined. `-0` is the integer 0.
+ * fraction, two or four elements, a string, a boolean, an object or a number
+ * out of range is undefined. `-0` is the integer 0. A JavaScript parser
+ * cannot tell `159.0` from `159`, so such a value reads as `159`, which §1.17
+ * allows (the reference, in Python, reads it as absent; a publisher never
+ * writes one).
  */
 export function readEye(raw: unknown): Eye | undefined {
   if (!Array.isArray(raw) || raw.length !== 3) return undefined
@@ -62,6 +73,17 @@ export function autoEye(s: Pick<ShardModel, 'vertices'>): Eye {
     if (y < bottom) bottom = y
   }
   return [0, top - Math.floor((top - bottom) / 8) + 0, 0]
+}
+
+/**
+ * The eye a viewer wearing `s` looks from, in the model's own frame (Z
+ * negated from the payload's), in ticks: the frame `ticksOf(vertex)` and
+ * `parts` use, for an editor that puts the eye beside a vertex or turns it
+ * with `posed`.
+ */
+export function eyeModelTicks(s: Pick<ShardModel, 'vertices'> & Partial<Pick<ShardModel, 'extra'>>): Eye {
+  const e = drawnEye(s)
+  return [e[0], e[1], -e[2] + 0]
 }
 
 /** The eye a viewer wearing `s` looks from, in ticks: its own `eye` when well formed, else the automatic eye. */

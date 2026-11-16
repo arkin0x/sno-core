@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { EYE_REACH, autoEye, drawnEye, eyeChosen, readEye, withEye } from './eye.js'
-import { fromPayload, toPayload, type ShardModel } from './shards.js'
+import { EYE_REACH, autoEye, drawnEye, eyeChosen, eyeModelTicks, readEye, withEye } from './eye.js'
+import { fromPayload, normalizeStored, ticksOf, toPayload, type ShardModel } from './shards.js'
 
 const at = (y: number): ShardModel['vertices'][number] => {
   const p = Math.floor(y / 120)
@@ -23,7 +23,7 @@ describe('eye (DECK-0003 §1.17)', () => {
   })
 
   it('reads anything else as absent: the automatic eye, never a refusal', () => {
-    for (const bad of [undefined, null, '0,159,0', 159, {}, { x: 0, y: 159, z: 0 }, [], [0, 159], [0, 159, 0, 0],
+    for (const bad of [undefined, null, false, true, '0,159,0', 159, {}, { x: 0, y: 159, z: 0 }, [], [0, 159], [0, 159, 0, 0], [0, 1e100, 0], [[0], 159, 0],
       [0, 159.5, 0], [0, EYE_REACH + 1, 0], [-EYE_REACH - 1, 0, 0], [0, '159', 0], [0, true, 0], [0, null, 0], [0, NaN, 0], [0, Infinity, 0]]) {
       expect(readEye(bad), JSON.stringify(bad)).toBeUndefined()
     }
@@ -68,7 +68,41 @@ describe('eye (DECK-0003 §1.17)', () => {
     const v1 = fromPayload({ ...out, v: 1, colors: [[1, 1, 1], [1, 1, 1], [1, 1, 1]] }, 'z')!
     expect(drawnEye(v1)).toEqual([0, 159, 24])
     expect((toPayload(v1) as unknown as Record<string, unknown>).eye).toEqual([0, 159, 24])
-    // A malformed eye on the wire is carried as it is and never refuses the object.
+    // A malformed eye on the wire never refuses the object (and is left off when written back).
     expect(fromPayload({ ...out, eye: 'up' }, 'w')).not.toBeNull()
+  })
+})
+
+describe('eye: frames and malformed values (review)', () => {
+  it('differs from a vertex at the same wire point only in the sign of Z, and eyeModelTicks lines them up', () => {
+    const wire = { v: 2, name: 'x', unit: 0, mode: 'solid', vertices: [[0, 0, 1], [1, 0, 0], [0, 1, 0]], colors: [1, 1, 1], faces: [[0, 1, 2]], eye: [0, 0, 120] }
+    const m = fromPayload(wire, 'x')!
+    expect(drawnEye(m)).toEqual([0, 0, 120])
+    expect(eyeModelTicks(m)).toEqual([0, 0, -120])
+    expect(ticksOf(m.vertices[0])).toEqual([0, 0, -120])
+  })
+
+  it('reads a malformed eye after fromPayload as the automatic eye, not chosen, and leaves it off the wire', () => {
+    const base = toPayload(column(0, 240)) as unknown as Record<string, unknown>
+    for (const bad of [null, [0, true, 0], [0, 159.5, 0], [0, 1e100, 0], [0, 159, 0, 0], [[0], [159], [0]], false, true]) {
+      const m = fromPayload(JSON.parse(JSON.stringify({ ...base, eye: bad })), 'm')!
+      expect(m, JSON.stringify(bad)).not.toBeNull()
+      expect(drawnEye(m)).toEqual([0, 210, 0])
+      expect(eyeChosen(m)).toBe(false)
+      expect('eye' in (toPayload(m) as unknown as Record<string, unknown>), JSON.stringify(bad)).toBe(false)
+    }
+  })
+
+  it('turns only a well-formed version 1 eye, and a zero Z stays +0', () => {
+    const base = { ...(toPayload(column(0, 240)) as unknown as Record<string, unknown>), v: 1, colors: [[1, 1, 1], [1, 1, 1], [1, 1, 1]] }
+    const zero = fromPayload({ ...base, eye: [0, 10, 0] }, 'a')!
+    expect(Object.is((zero.extra!.eye as number[])[2], 0)).toBe(true)
+    expect(fromPayload({ ...base, eye: [0, 0, -7681] }, 'b')!.extra!.eye).toEqual([0, 0, -7681])
+    expect(fromPayload({ ...base, eye: [0, 'x', 5] }, 'c')!.extra!.eye).toEqual([0, 'x', 5])
+  })
+
+  it('keeps the eye as it is through normalizeStored', () => {
+    const m = withEye(column(0, 240), [0, 159, -24])
+    expect(drawnEye(normalizeStored(JSON.parse(JSON.stringify(m))))).toEqual([0, 159, -24])
   })
 })
