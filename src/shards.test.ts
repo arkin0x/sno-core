@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { OPACITY_FLOOR, PLACEHOLDER_NAME, TICKS_PER_UNIT, blankName, drawnOpacity, readOpacity, expandFaceColors, flatten, fromPayload, liftKnown, newShard, normalizeStored, packFaceColors, packTicks, ticksOf, toPayload, toRender, unitsLabel, unpackFaceColors, unpackTicks, validFace, validPoint, vertexAt, type ShardModel } from './shards.js'
+import { PLACEHOLDER_NAME, TICKS_PER_UNIT, blankName, drawnOpacity, readOpacity, expandFaceColors, flatten, fromPayload, liftKnown, newShard, normalizeStored, packFaceColors, packTicks, ticksOf, toPayload, toRender, unitsLabel, unpackFaceColors, unpackTicks, validFace, validPoint, vertexAt, type ShardModel } from './shards.js'
 import { BUILT_IN, indexOf, readPalette, remap, resolvePalette } from './snoPalette.js'
 
 const tri: ShardModel = {
@@ -760,20 +760,24 @@ describe('opacity (DECK-0003 §1.11)', () => {
     expect(toPayload({ ...tri, opacity: 100 })).not.toHaveProperty('opacity')
   })
 
-  it('draws 1 to 9 at the floor, and keeps the value as written', () => {
-    for (const v of [1, 5, 9]) {
+  it('draws 0 to 99 at exactly that percent, with no floor (owner, 2026-11-15)', () => {
+    for (const v of [0, 1, 5, 9, 10, 99]) {
       const s = fromPayload(wire({ opacity: v }), 'x')!
       expect(s.opacity).toBe(v)
-      expect(drawnOpacity(s)).toBe(OPACITY_FLOOR / 100)
+      expect(drawnOpacity(s)).toBe(v / 100)
       expect(toPayload(s).opacity).toBe(v)
     }
-    expect(drawnOpacity({ opacity: 10 })).toBe(0.1)
-    expect(drawnOpacity({ opacity: 99 })).toBe(0.99)
+    // JSON has one zero: -0 is 0 and is written as 0. Not through wire(),
+    // whose JSON round trip would turn -0 into 0 before fromPayload saw it.
+    expect(Object.is(readOpacity(-0), 0)).toBe(true)
+    const neg = fromPayload({ ...toPayload(tri), opacity: -0 }, 'x')!
+    expect(Object.is(neg.opacity, 0)).toBe(true)
+    expect(JSON.stringify(toPayload(neg))).toContain('"opacity":0')
   })
 
   it('repairs a malformed value to opaque rather than refusing the object', () => {
     // The reference's repair table (sno-reference.py drawn_opacity), one to one.
-    for (const bad of [0, -0, -5, 101, 1e100, 50.5, '50', true, false, null, [50], {}, { v: 50 }]) {
+    for (const bad of [-1, -5, 101, 1e100, 50.5, '50', true, false, null, [50], {}, { v: 50 }]) {
       const s = fromPayload(wire({ opacity: bad }), 'x')
       expect(s, JSON.stringify(bad)).not.toBeNull()
       expect(s!).not.toHaveProperty('opacity')
@@ -842,7 +846,7 @@ describe('opacity (DECK-0003 §1.11)', () => {
 
   it('repairs a malformed opacity a stored model holds when it is loaded', () => {
     const base = fromPayload(toPayload(tri), 'x')!
-    for (const bad of [null, 100, 0, 'x']) {
+    for (const bad of [null, 100, -1, 'x']) {
       const loaded = normalizeStored({ ...base, opacity: bad as unknown as number })
       expect(loaded, String(bad)).not.toHaveProperty('opacity')
     }
@@ -855,9 +859,15 @@ describe('opacity (DECK-0003 §1.11)', () => {
   })
 
   it('never writes an invalid value a caller put on the model', () => {
-    expect(toPayload({ ...tri, opacity: 0 })).not.toHaveProperty('opacity')
+    expect(toPayload({ ...tri, opacity: -1 })).not.toHaveProperty('opacity')
     expect(toPayload({ ...tri, opacity: 33.3 })).not.toHaveProperty('opacity')
-    expect(drawnOpacity({ opacity: 0 })).toBe(1)
+    expect(drawnOpacity({ opacity: -1 })).toBe(1)
+    // 0 is valid since 0.1.30, and kept.
+    expect(toPayload({ ...tri, opacity: 0 }).opacity).toBe(0)
+    expect(drawnOpacity({ opacity: 0 })).toBe(0)
+    // A stored -0 is held and written as 0.
+    expect(Object.is(normalizeStored({ ...tri, opacity: -0 }).opacity, 0)).toBe(true)
+    expect(Object.is(toPayload({ ...tri, opacity: -0 }).opacity, 0)).toBe(true)
   })
 })
 
