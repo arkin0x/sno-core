@@ -9,8 +9,8 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  CUBE_COLORS, CUBE_POINTS, CUBE_QUADS, CUBE_TRIS, blob, cubeTris, glb, gltfJson, materialise, mtlText, objText,
-  plyAscii, plyBinary, stlAscii, stlBinary, viscam, vox, type V3,
+  CUBE_COLORS, CUBE_POINTS, CUBE_QUADS, CUBE_TRIS, WEDGE_FACES, WEDGE_POINTS, blob, cubeTris, glb, gltfJson, materialise, mtlText, objText,
+  plyAscii, plyBinary, plyBlender, stlAscii, stlBinary, viscam, vox, type V3,
 } from './meshFixtures.fixture.js'
 import { importMesh, detectFormat, readMesh, type ImportFile, type ImportResponse } from './importFile.js'
 import { IMPORT_MAX_FILE_BYTES, MeshImportError, makeClock, type ImportMesh } from './mesh.js'
@@ -153,6 +153,80 @@ describe('PLY', () => {
     expect(s.vertices).toHaveLength(4)
     expect(s.faces).toHaveLength(4)
     expectValid(s)
+  })
+})
+
+/** Each face's unit normal on the wire, by its winding, rounded to two places: the distinct directions the shard's faces look. */
+function wireNormals(s: ShardModel): string[] {
+  const p = wirePositions(s)
+  const seen = new Set<string>()
+  for (const [a, b, c] of s.faces) {
+    const u = [0, 1, 2].map((k) => p[b][k] - p[a][k]), v = [0, 1, 2].map((k) => p[c][k] - p[a][k])
+    const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+    const len = Math.hypot(n[0], n[1], n[2])
+    seen.add(n.map((x) => (Math.round((x / len) * 100) / 100 || 0).toFixed(2)).join(' '))
+  }
+  return [...seen].sort()
+}
+
+describe('PLY from Blender (Z up)', () => {
+  const BLENDER_4 = 'Created in Blender version 4.2.3'
+  const BLENDER_3 = 'Created by Blender 3.6.0 - www.blender.org'
+  const S = Math.SQRT1_2.toFixed(2)
+  const dirs = (...d: string[]): string[] => d.sort()
+  // The ramp's faces in Blender's frame, and where the rotation (x, y, z) to
+  // (x, z, -y) sends each: bottom -Z to -Y, back wall +Y to -Z, the slope
+  // (front and up) to +Y and +Z, the sides stay on -X and +X (no mirror).
+  const AS_WRITTEN = dirs('0.00 0.00 -1.00', '0.00 1.00 0.00', `0.00 -${S} ${S}`, '-1.00 0.00 0.00', '1.00 0.00 0.00')
+  const STOOD_UP = dirs('0.00 -1.00 0.00', '0.00 0.00 -1.00', `0.00 ${S} ${S}`, '-1.00 0.00 0.00', '1.00 0.00 0.00')
+
+  it('reads a Blender 4.x PLY ("Created in Blender version") as Z up and stands it: tall in Z becomes tall in Y', () => {
+    const tower = CUBE_POINTS.map(([x, y, z]) => [x, y, z * 3] as V3)
+    const bytes = plyBlender(tower, CUBE_QUADS, BLENDER_4)
+    expect(parsePly(bytes, clock()).up).toBe('z')
+    const s = run('tower.ply', bytes, { fit: 6 * T }).shard
+    const { min, max } = box(s)
+    expect([max[0] - min[0], max[1] - min[1], max[2] - min[2]]).toEqual([2 * T, 6 * T, 2 * T])
+    expect(wireVolume(s)).toBeGreaterThan(0)
+    expectValid(s)
+  })
+
+  it('reads an older Blender PLY ("Created by Blender", binary as 3.x writes by default) the same way', () => {
+    const four = run('ramp.ply', plyBlender(WEDGE_POINTS, WEDGE_FACES, BLENDER_4), { fit: 4 * T }).shard
+    for (const bytes of [plyBlender(WEDGE_POINTS, WEDGE_FACES, BLENDER_3, true), plyBlender(WEDGE_POINTS, WEDGE_FACES, BLENDER_3, false), plyBlender(WEDGE_POINTS, WEDGE_FACES, BLENDER_3)]) {
+      expect(parsePly(bytes, clock()).up).toBe('z')
+      const s = run('ramp.ply', bytes, { fit: 4 * T }).shard
+      expect(s.vertices.map(ticksOf)).toEqual(four.vertices.map(ticksOf))
+      expect(s.faces).toEqual(four.faces)
+    }
+  })
+
+  it('turns by a rotation: every face keeps its winding, and each normal turns with it, X kept, the front to +Z', () => {
+    const s = run('ramp.ply', plyBlender(WEDGE_POINTS, WEDGE_FACES, BLENDER_4), { fit: 4 * T }).shard
+    expect(wireVolume(s)).toBeGreaterThan(0)
+    expect(wireNormals(s)).toEqual(STOOD_UP)
+    // The ramp's slope came down toward Blender's front (-Y): it now comes
+    // down toward +Z, the viewer, as Blender's glTF and OBJ exports put it.
+    const { min, max } = box(s)
+    expect([max[0] - min[0], max[1] - min[1], max[2] - min[2]]).toEqual([4 * T, 2 * T, 2 * T])
+    expectValid(s)
+  })
+
+  it('leaves a PLY that is not Blender\'s as it was: Y up, every face where the file put it', () => {
+    for (const comment of ['made by MeshLab', 'Blender would have written this differently', 'created with blenderish 1.0']) {
+      const bytes = plyBlender(WEDGE_POINTS, WEDGE_FACES, comment)
+      expect(parsePly(bytes, clock()).up).toBe('y')
+      const s = run('ramp.ply', bytes, { fit: 4 * T }).shard
+      expect(wireNormals(s)).toEqual(AS_WRITTEN)
+      expect(wireVolume(s)).toBeGreaterThan(0)
+    }
+    expect(parsePly(plyAscii({ points: CUBE_POINTS, faces: CUBE_QUADS }), clock()).up).toBe('y')
+  })
+
+  it('only trusts a comment line: the same words in obj_info do not count', () => {
+    const text = new TextDecoder().decode(plyBlender(WEDGE_POINTS, WEDGE_FACES, 'made by MeshLab'))
+      .replace('comment made by MeshLab', 'obj_info Created in Blender version 4.2.3')
+    expect(parsePly(new TextEncoder().encode(text), clock()).up).toBe('y')
   })
 })
 
