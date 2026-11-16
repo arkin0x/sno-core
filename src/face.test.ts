@@ -58,8 +58,23 @@ describe('face (DECK-0003 §1.18)', () => {
   })
 
   it('carries a name a later revision may add, so an older editor does not lose it', () => {
-    const p = toPayload(shard({ face: 'level' })) as unknown as Record<string, unknown>
-    expect(p.face).toBe('level')
-    expect(drawnFace(fromPayload(p as never, 'x')!)).toBe('path')
+    for (const later of ['level', 'bank-left', 'still2']) {
+      const p = toPayload(shard({ face: later })) as unknown as Record<string, unknown>
+      expect(p.face).toBe(later)
+      expect(drawnFace(fromPayload(p as never, 'x')!)).toBe('path')
+    }
+  })
+
+  it('leaves off a string that could not be a name: another case, a space, empty', () => {
+    for (const bad of ['Upright', 'UPRIGHT', ' upright', '', '1st', 'up right']) {
+      expect((toPayload(shard({ face: bad })) as unknown as Record<string, unknown>).face, JSON.stringify(bad)).toBeUndefined()
+    }
+  })
+
+  it('reads a version 1 payload\'s face as written, and writes it back', () => {
+    const p = toPayload(withFace(shard(), 'upright')) as unknown as Record<string, unknown>
+    const v1 = fromPayload({ ...p, v: 1, colors: [[1, 1, 1], [1, 1, 1], [1, 1, 1]] } as never, 'x')!
+    expect(drawnFace(v1)).toBe('upright')
+    expect((toPayload(v1) as unknown as Record<string, unknown>).face).toBe('upright')
   })
 })

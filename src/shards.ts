@@ -375,9 +375,14 @@ function v1Eye(extra: Record<string, unknown> | undefined, v: unknown): Record<s
 function carried(extra: Record<string, unknown>): Record<string, unknown> {
   // A publisher never writes a malformed `eye` (DECK-0003 §1.17): one this
   // library cannot read as an eye is left off the wire rather than passed on.
-  // Nor a `face` that is not a string (§1.18); a name this version does not
-  // know is carried, since a later revision may define it.
-  return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined && (k !== 'eye' || wellFormedEye(v)) && (k !== 'face' || typeof v === 'string')))
+  // Nor a `face` that could not be a mode's name (§1.18): a name this version
+  // does not know is carried, since a later revision may define it.
+  return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined && (k !== 'eye' || wellFormedEye(v)) && (k !== 'face' || faceNameShape(v))))
+}
+
+/** A string shaped like a facing mode's name, `"path"`, `"upright"` or one a later revision adds: lowercase letters, digits and hyphens, from a letter (§1.18). */
+function faceNameShape(v: unknown): v is string {
+  return typeof v === 'string' && /^[a-z][a-z0-9-]*$/.test(v)
 }
 
 /** Three integers, each -7680..7680: an `eye` as §1.17 reads it (eye.ts readEye, which imports this module). */
