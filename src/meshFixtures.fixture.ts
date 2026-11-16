@@ -115,11 +115,13 @@ export const WEDGE_FACES: number[][] = [
 ]
 
 /**
- * A PLY as Blender's exporter writes one with its defaults (Forward Y, Up Z):
- * positions, vertex normals, UVs and RGBA colors per vertex, faces with a uint
- * list, and the header comment that signs it. `comment` is that line, so a
- * test can write the 4.x one ("Created in Blender version 4.2.3"), the older
- * Python exporter's ("Created by Blender 3.6.0 - www.blender.org"), or
+ * A PLY laid out as Blender's Python exporter (3.5 and before) writes one,
+ * Forward Y and Up Z: positions, vertex normals, UVs and RGBA colors per
+ * vertex, faces with a uint list, and the header comment that signs it. The
+ * C++ exporter (3.6 on) puts colors before UVs; the parser reads properties
+ * by name, so the order does not matter here. `comment` is that line, so a
+ * test can write the C++ one ("Created in Blender version 4.2.3"), the
+ * Python add-on's ("Created by Blender 3.5.1 - www.blender.org"), or
  * anything else.
  */
 export function plyBlender(points: V3[], faces: number[][], comment: string, little?: boolean): Uint8Array {

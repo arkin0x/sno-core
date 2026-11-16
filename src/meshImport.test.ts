@@ -171,7 +171,7 @@ function wireNormals(s: ShardModel): string[] {
 
 describe('PLY from Blender (Z up)', () => {
   const BLENDER_4 = 'Created in Blender version 4.2.3'
-  const BLENDER_3 = 'Created by Blender 3.6.0 - www.blender.org'
+  const BLENDER_3 = 'Created by Blender 3.5.1 - www.blender.org'
   const S = Math.SQRT1_2.toFixed(2)
   const dirs = (...d: string[]): string[] => d.sort()
   // The ramp's faces in Blender's frame, and where the rotation (x, y, z) to
@@ -180,7 +180,7 @@ describe('PLY from Blender (Z up)', () => {
   const AS_WRITTEN = dirs('0.00 0.00 -1.00', '0.00 1.00 0.00', `0.00 -${S} ${S}`, '-1.00 0.00 0.00', '1.00 0.00 0.00')
   const STOOD_UP = dirs('0.00 -1.00 0.00', '0.00 0.00 -1.00', `0.00 ${S} ${S}`, '-1.00 0.00 0.00', '1.00 0.00 0.00')
 
-  it('reads a Blender 4.x PLY ("Created in Blender version") as Z up and stands it: tall in Z becomes tall in Y', () => {
+  it('reads a Blender 3.6+ PLY ("Created in Blender version") as Z up and stands it: tall in Z becomes tall in Y', () => {
     const tower = CUBE_POINTS.map(([x, y, z]) => [x, y, z * 3] as V3)
     const bytes = plyBlender(tower, CUBE_QUADS, BLENDER_4)
     expect(parsePly(bytes, clock()).up).toBe('z')
@@ -191,7 +191,7 @@ describe('PLY from Blender (Z up)', () => {
     expectValid(s)
   })
 
-  it('reads an older Blender PLY ("Created by Blender", binary as 3.x writes by default) the same way', () => {
+  it('reads an older Blender PLY ("Created by Blender", binary as the 3.5 add-on writes by default) the same way', () => {
     const four = run('ramp.ply', plyBlender(WEDGE_POINTS, WEDGE_FACES, BLENDER_4), { fit: 4 * T }).shard
     for (const bytes of [plyBlender(WEDGE_POINTS, WEDGE_FACES, BLENDER_3, true), plyBlender(WEDGE_POINTS, WEDGE_FACES, BLENDER_3, false), plyBlender(WEDGE_POINTS, WEDGE_FACES, BLENDER_3)]) {
       expect(parsePly(bytes, clock()).up).toBe('z')

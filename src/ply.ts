@@ -18,8 +18,9 @@
  * which is SNO's, so that is what is assumed, with one exception: a file
  * Blender wrote. Blender's PLY exporter defaults to Forward Y, Up Z, which is
  * Blender's own frame unchanged, and it signs its header with a comment:
- * "Created in Blender version 4.2.0" from 4.x, "Created by Blender 3.6.0 -
- * www.blender.org" from the older Python exporter. A file with either comment
+ * "Created in Blender version 4.2.0" from the C++ exporter (3.6 on),
+ * "Created by Blender 3.5.1 - www.blender.org" from the Python add-on before
+ * it. A file with either comment
  * is read as Z up, and turned onto Y up by the same rotation as STL and
  * MagicaVoxel, (x, y, z) to (x, z, -y) (meshToShard.ts), so a default Blender
  * export stands instead of lying on its back (arkinox, 2026-11-16). That
@@ -65,7 +66,8 @@ const HEADER_MAX = 64 * 1024
 
 /**
  * The comment Blender's PLY exporter signs its header with: "Created in
- * Blender version ..." from 4.x on, "Created by Blender ..." before that.
+ * Blender version ..." from the C++ exporter (3.6 on), "Created by Blender
+ * ..." from the Python add-on before it.
  */
 const BLENDER_COMMENT = /^comment\s+created\s+(?:in|by)\s+blender\b/i
 
