@@ -38,7 +38,7 @@
  * This is ONOSENDAI's lib/anim.ts (ONOSENDAI #735), moved here so both
  * clients read one copy.
  */
-import type { ShardModel } from './shards.js';
+import { type ShardModel } from './shards.js';
 /** The payload field. */
 export declare const ANIM_FIELD = "anim";
 /** Motions read per object; entries past this are ignored (§1.14). */
@@ -50,7 +50,7 @@ export declare const MAX_MOTIONS = 4;
 export declare const MAX_PER_SECOND = 2;
 /** Largest `b`, seconds: a year of 365 days (§1.14). */
 export declare const MAX_SECONDS = 31536000;
-/** Largest distance in ticks (the 64-unit position bound of §1.8). */
+/** Largest distance in ticks: the position bound of §1.8 (TICK_REACH, 491520). */
 export declare const REACH: number;
 /** Largest path leg weight. */
 export declare const MAX_WEIGHT = 1000;

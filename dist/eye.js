@@ -23,18 +23,18 @@
  * renderer uses `drawnEye` as it is and never passes it through `toRender`.
  *
  * The eye is not held to the avatar's shape: it may sit anywhere within the
- * 64-unit bound, so an eye behind and above the avatar gives a view from
+ * position bound (EYE_REACH), so an eye behind and above the avatar gives a view from
  * behind. A client keeps the camera short of walls; that is the client's.
  */
-import { TICKS_PER_UNIT, ticksOf } from './shards.js';
+import { TICK_REACH, ticksOf } from './shards.js';
 /** The payload field. */
 export const EYE_FIELD = 'eye';
-/** The farthest an eye coordinate reaches, in ticks: the 64-unit position bound of §1.8. */
-export const EYE_REACH = 64 * TICKS_PER_UNIT;
+/** The farthest an eye coordinate reaches, in ticks: the position bound of §1.8 (TICK_REACH). */
+export const EYE_REACH = TICK_REACH;
 const isInt = (n) => Number.isInteger(n);
 /**
  * An `eye` value as §1.17 reads it: exactly three JSON integers, each from
- * -7680 to 7680, or undefined, which means the automatic eye. Null, a
+ * -EYE_REACH to EYE_REACH, or undefined, which means the automatic eye. Null, a
  * fraction, two or four elements, a string, a boolean, an object or a number
  * out of range is undefined. `-0` is the integer 0. A JavaScript parser
  * cannot tell `159.0` from `159`, so such a value reads as `159`, which §1.17

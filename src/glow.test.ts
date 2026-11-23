@@ -17,10 +17,10 @@ const wire = (more: Record<string, unknown>) => JSON.parse(JSON.stringify({ ...t
 const NOT_INTEGERS = [0.5, 120.5, NaN, Infinity, -Infinity, '120', true, false, null, [120], {}, { v: 120 }]
 
 describe('point size (DECK-0003 §1.15)', () => {
-  it('reads a whole number of ticks from 0 to 7680', () => {
-    for (const v of [0, 1, 48, 120, GLOW_REACH]) expect(readPointSize(v)).toBe(v)
+  it('reads a whole number of ticks from 0 to 491520 (4,096 units)', () => {
+    for (const v of [0, 1, 48, 120, 7681, GLOW_REACH]) expect(readPointSize(v)).toBe(v)
     expect(Object.is(readPointSize(-0), 0)).toBe(true)
-    expect(GLOW_REACH).toBe(7680)
+    expect(GLOW_REACH).toBe(491520)
   })
 
   it('reads anything else as absent, the reader\'s own size', () => {
@@ -43,7 +43,7 @@ describe('glow (DECK-0003 §1.16)', () => {
   it('reads a word, a radius and a strength', () => {
     expect(readGlow(['fog', 240, 35])).toEqual({ style: 'fog', radius: 240, strength: 35 })
     expect(readGlow(['light', 1, 1])).toEqual({ style: 'light', radius: 1, strength: 1 })
-    expect(readGlow(['light', GLOW_REACH, 100])).toEqual({ style: 'light', radius: 7680, strength: 100 })
+    expect(readGlow(['light', GLOW_REACH, 100])).toEqual({ style: 'light', radius: 491520, strength: 100 })
   })
 
   it('reads anything else as no glow', () => {
@@ -111,7 +111,7 @@ describe('setting both', () => {
   })
 
   it('never writes a malformed point size', () => {
-    for (const bad of [-1, 7681, 4.5, NaN]) expect(withPointSize(tri, bad)).not.toHaveProperty('extra')
+    for (const bad of [-1, GLOW_REACH + 1, 4.5, NaN]) expect(withPointSize(tri, bad)).not.toHaveProperty('extra')
   })
 
   it('writes and removes the glow, and keeps the other carried fields', () => {

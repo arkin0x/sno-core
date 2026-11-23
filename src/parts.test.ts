@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_PART_DEPTH, addPart, parseAddress, partMatrix, placedBounds, quarterTurnPart, refKey, refTags, removeParts, resolveParts, turnFromMatrix, turnMatrix, type FetchRef } from './parts.js'
-import { fromPayload, ticksOf, toPayload, toRender, type Part, type Ref, type ShardModel } from './shards.js'
+import { PART_REACH, fromPayload, ticksOf, toPayload, toRender, type Part, type Ref, type ShardModel } from './shards.js'
 
 const PK = 'ab'.repeat(32)
 const addr = (d: string): Ref => ['a', `33331:${PK}:${d}`]
@@ -49,7 +49,7 @@ describe('refs and parts on the wire (§1.9 rules 11 to 13)', () => {
       { refs: [['e', 'cd'.repeat(32), 7]] },
       { parts: [[0, 0, 0, 0, 0, 0, 0, 0]] },
       { refs: [addr('t')], parts: [[1, 0, 0, 0, 0, 0, 0, 0]] },
-      { refs: [addr('t')], parts: [[0, 7681, 0, 0, 0, 0, 0, 0]] },
+      { refs: [addr('t')], parts: [[0, PART_REACH + 1, 0, 0, 0, 0, 0, 0]] },
       { refs: [addr('t')], parts: [[0, 0, 0, 0, 360, 0, 0, 0]] },
       { refs: [addr('t')], parts: [[0, 0, 0, 0, 0, 0, 0, 0.5]] },
       { refs: [addr('t')], parts: [[0, 0, 0, 0, 0, 0, 0]] },
@@ -180,8 +180,8 @@ describe('editing placements', () => {
     let p: Part = before
     for (let k = 0; k < 4; k++) p = quarterTurnPart(p, 0, 1, [60, 60])!
     expect(p).toEqual(before)
-    // Off the 64-unit bound is refused.
-    expect(quarterTurnPart(place([0, 0, 0], [7680, 0, 0]), 0, 1, [-7680, 0])).toBeNull()
+    // Off the position bound is refused.
+    expect(quarterTurnPart(place([0, 0, 0], [PART_REACH, 0, 0]), 0, 1, [-PART_REACH, 0])).toBeNull()
   })
 
   it('adds a placement reusing its reference, and removing prunes references no placement uses', () => {

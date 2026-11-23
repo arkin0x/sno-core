@@ -628,7 +628,7 @@ export function partMatrix(part, parentUnit, placedUnit) {
  * Its origin swings about the pivot exactly as a vertex would, and its own
  * turn takes the same quarter, so a placed object turns with the points
  * around it. Model frame in, model frame out. Null when the origin would
- * leave the 64-unit bound.
+ * leave the position bound (PART_REACH).
  */
 export function quarterTurnPart(part, a, b, pivot) {
     const at = [...part.at];

@@ -50,7 +50,7 @@ export declare const IMPORT_BUDGET_BYTES = 47000;
 export declare const IMPORT_MAX_FACES = 5000;
 /** The color a vertex gets when its file has none: the client's own cyan. */
 export declare const IMPORT_DEFAULT_COLOR: Rgb;
-/** The furthest a fitted shard may reach, in ticks: the 64-unit position bound (§1.8). */
+/** The furthest a fitted shard may reach, in ticks: the position bound (§1.8). */
 export declare const IMPORT_MAX_FIT: number;
 /**
  * How large an import comes in on a grid of half-width `extent` units: its

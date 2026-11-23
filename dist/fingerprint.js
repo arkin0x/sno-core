@@ -73,7 +73,7 @@
  * fingerprint that read runs of tokens would not.
  *
  * **Range.** Every coordinate, once moved, must be a safe integer (below
- * 2^53 ticks). A publisher stays within 64 units of the origin (DECK-0003
+ * 2^53 ticks). A publisher stays within MAX_EXTENT units of the origin (DECK-0003
  * §1.8), far inside that; a larger value throws a RangeError rather than
  * being spelled in a way the fingerprint would split.
  *
