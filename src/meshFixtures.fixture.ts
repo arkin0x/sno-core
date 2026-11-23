@@ -96,6 +96,61 @@ export function plyBinary(spec: PlySpec, little: boolean): Uint8Array {
   return concat([header, body])
 }
 
+/**
+ * A ramp in Blender's frame (Z up, front toward -Y): 2 wide in X, 1 deep in Y,
+ * 1 tall in Z, its back wall at y = 1 and its slope coming down toward the
+ * front. Every face points a different way, so the face normals say exactly
+ * where each axis went. Wound counter-clockwise seen from outside.
+ */
+export const WEDGE_POINTS: V3[] = [
+  [0, 0, 0], [2, 0, 0], [2, 1, 0], [0, 1, 0],
+  [0, 1, 1], [2, 1, 1],
+]
+export const WEDGE_FACES: number[][] = [
+  [0, 3, 2, 1], // bottom, -z
+  [3, 4, 5, 2], // back wall, +y
+  [0, 1, 5, 4], // slope, toward -y and +z
+  [0, 4, 3], // left, -x
+  [1, 2, 5], // right, +x
+]
+
+/**
+ * A PLY laid out as Blender's Python exporter (3.5 and before) writes one,
+ * Forward Y and Up Z: positions, vertex normals, UVs and RGBA colors per
+ * vertex, faces with a uint list, and the header comment that signs it. The
+ * C++ exporter (3.6 on) puts colors before UVs; the parser reads properties
+ * by name, so the order does not matter here. `comment` is that line, so a
+ * test can write the C++ one ("Created in Blender version 4.2.3"), the
+ * Python add-on's ("Created by Blender 3.5.1 - www.blender.org"), or
+ * anything else.
+ */
+export function plyBlender(points: V3[], faces: number[][], comment: string, little?: boolean): Uint8Array {
+  const format = little === undefined ? 'ascii' : little ? 'binary_little_endian' : 'binary_big_endian'
+  const header = ['ply', `format ${format} 1.0`, `comment ${comment}`, `element vertex ${points.length}`,
+    'property float x', 'property float y', 'property float z', 'property float nx', 'property float ny', 'property float nz',
+    'property float s', 'property float t', 'property uchar red', 'property uchar green', 'property uchar blue', 'property uchar alpha',
+    `element face ${faces.length}`, 'property list uchar uint vertex_indices', 'end_header'].join('\n') + '\n'
+  if (little === undefined) {
+    const rows = points.map((p) => [...p, 0, 0, 1, 0, 0, 255, 255, 255, 255].join(' '))
+    for (const f of faces) rows.push([f.length, ...f].join(' '))
+    return enc.encode(header + rows.join('\n') + '\n')
+  }
+  let size = points.length * (32 + 4)
+  for (const f of faces) size += 1 + f.length * 4
+  const body = new Uint8Array(size)
+  const dv = new DataView(body.buffer)
+  let at = 0
+  for (const p of points) {
+    for (const v of [...p, 0, 0, 1, 0, 0]) { dv.setFloat32(at, v, little); at += 4 }
+    for (let k = 0; k < 4; k++) dv.setUint8(at++, 255)
+  }
+  for (const f of faces) {
+    dv.setUint8(at++, f.length)
+    for (const v of f) { dv.setUint32(at, v, little); at += 4 }
+  }
+  return concat([enc.encode(header), body])
+}
+
 /** Triangles as STL wants them: three corners each. */
 export type Tri = [V3, V3, V3]
 

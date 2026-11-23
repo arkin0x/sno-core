@@ -15,8 +15,19 @@
  * faces is a point cloud.
  *
  * PLY has no up axis. Scanned PLYs (the Stanford models) and MeshLab are Y up,
- * which is SNO's, so that is what is assumed; a model that lies on its back
- * stands up with a quarter turn in the workshop.
+ * which is SNO's, so that is what is assumed, with one exception: a file
+ * Blender wrote. Blender's PLY exporter defaults to Forward Y, Up Z, which is
+ * Blender's own frame unchanged, and it signs its header with a comment:
+ * "Created in Blender version 4.2.0" from the C++ exporter (3.6 on),
+ * "Created by Blender 3.5.1 - www.blender.org" from the Python add-on before
+ * it. A file with either comment
+ * is read as Z up, and turned onto Y up by the same rotation as STL and
+ * MagicaVoxel, (x, y, z) to (x, z, -y) (meshToShard.ts), so a default Blender
+ * export stands instead of lying on its back (arkinox, 2026-11-16). That
+ * rotation also agrees with Blender's own glTF and OBJ exporters: a model
+ * facing Blender's front (-Y) comes in facing +Z, toward the viewer, by every
+ * route. A Blender file exported with Up Y is the one that now lies down, and
+ * a quarter turn in the workshop stands it up.
  */
 
 import {
@@ -53,8 +64,15 @@ type Format = 'ascii' | 'binary_little_endian' | 'binary_big_endian'
 
 const HEADER_MAX = 64 * 1024
 
+/**
+ * The comment Blender's PLY exporter signs its header with: "Created in
+ * Blender version ..." from the C++ exporter (3.6 on), "Created by Blender
+ * ..." from the Python add-on before it.
+ */
+const BLENDER_COMMENT = /^comment\s+created\s+(?:in|by)\s+blender\b/i
+
 /** Where the header ends, and what it says. */
-function readHeader(bytes: Uint8Array): { format: Format; elements: Element[]; body: number } {
+function readHeader(bytes: Uint8Array): { format: Format; elements: Element[]; body: number; blender: boolean } {
   const limit = Math.min(bytes.length, HEADER_MAX)
   let text = ''
   for (let i = 0; i < limit; i++) text += String.fromCharCode(bytes[i])
@@ -64,10 +82,13 @@ function readHeader(bytes: Uint8Array): { format: Format; elements: Element[]; b
   const lines = text.slice(0, m.index).split(/\r?\n/)
   if (lines[0]?.trim() !== 'ply') throw new MeshImportError('That is not a PLY file: it does not start with "ply".')
   let format: Format | null = null
+  let blender = false
   const elements: Element[] = []
   for (const raw of lines.slice(1)) {
     const w = raw.trim().split(/\s+/)
-    if (w[0] === 'format') {
+    if (w[0] === 'comment') {
+      if (BLENDER_COMMENT.test(raw.trim())) blender = true
+    } else if (w[0] === 'format') {
       if (w[1] !== 'ascii' && w[1] !== 'binary_little_endian' && w[1] !== 'binary_big_endian') throw new MeshImportError(`That PLY is in a format this cannot read: ${w[1] ?? 'none'}.`)
       format = w[1]
     } else if (w[0] === 'element') {
@@ -89,10 +110,10 @@ function readHeader(bytes: Uint8Array): { format: Format; elements: Element[]; b
         el.props.push({ name: w[2], type })
       }
     }
-    // comment, obj_info and anything else: ignored.
+    // obj_info, any other comment and anything else: ignored.
   }
   if (!format) throw new MeshImportError('That PLY does not say whether it is ASCII or binary.')
-  return { format, elements, body }
+  return { format, elements, body, blender }
 }
 
 const COLOR_NAMES: Array<[string, string, string]> = [['red', 'green', 'blue'], ['r', 'g', 'b'], ['diffuse_red', 'diffuse_green', 'diffuse_blue']]
@@ -174,7 +195,7 @@ function minBytes(el: Element, format: Format): number {
 
 /** A PLY file as a mesh. Throws MeshImportError on anything it cannot read. */
 export function parsePly(bytes: Uint8Array, clock: Clock): ImportMesh {
-  const { format, elements, body } = readHeader(bytes)
+  const { format, elements, body, blender } = readHeader(bytes)
   const vertexEl = elements.find((e) => e.name === 'vertex')
   if (!vertexEl) throw new MeshImportError('That PLY has no vertices.')
   checkVertexCount(vertexEl.count)
@@ -257,7 +278,7 @@ export function parsePly(bytes: Uint8Array, clock: Clock): ImportMesh {
   if (colors && rgb && vertexEl.props[rgb[0]].type.startsWith('float')) normalizeColorScale(colors)
   const polys = polygons.done()
   if (floatFaceColors && polys.colors) normalizeColorScale(polys.colors)
-  return finishMesh({ positions, ...(colors ? { colors } : {}), polygons: polys, up: 'y', clock })
+  return finishMesh({ positions, ...(colors ? { colors } : {}), polygons: polys, up: blender ? 'z' : 'y', clock })
 }
 
 function skipList(reader: Reader, p: Property): void {

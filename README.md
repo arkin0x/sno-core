@@ -32,12 +32,74 @@ later version learns a field, `normalizeStored` lifts it out of `extra` for
 models saved before, so call it on every model you load from storage. A copy
 that should carry the shape alone drops `extra`.
 
-**Opacity.** `ShardModel.opacity` is the payload's `opacity`, a whole percent 1
+**Opacity.** `ShardModel.opacity` is the payload's `opacity`, a whole percent 0
 to 99 (absent or 100 is fully opaque, and is never written). A malformed value
 reads as opaque rather than refusing the object. `drawnOpacity(model)` is what a
-renderer multiplies by: the percent as a fraction, never below
-`OPACITY_FLOOR` (10%). A placed object uses its own, never its parent's, and an
-avatar ignores it (DECK-0003 §1.11).
+renderer multiplies the object's faces, lines and points by: the percent as a
+fraction, with no floor since 0.1.30, so 0 draws nothing of the object's own.
+It never multiplies the glow. A placed object uses its own, never its parent's,
+and an avatar ignores it (DECK-0003 §1.11).
+
+**Eye.** `eye` (DECK-0003 §1.17) travels in `extra` too: where a viewer looks
+from when it wears the object as an avatar and sees in first person, three
+whole numbers of ticks in the payload's frame. `drawnEye(model)` gives the
+written eye when it is well formed, else the automatic eye, one eighth of the
+avatar's height below its top and straight above the origin
+(`top - floor((top - bottom) / 8)` over its vertices' Y ticks; the origin for
+no vertices). `readEye` reads a raw value (undefined when malformed, never a
+refusal), `autoEye` is the automatic eye alone, `eyeChosen` tells AUTO from
+CHOSEN, and `withEye` sets or clears it and never writes a malformed value.
+`[0, 0, 0]` is a choice: the old eye at the origin. A version 1 payload's eye
+is read into the version 2 frame with its vertices, and a malformed eye is
+left off the wire when the object is written back. The eye is in the
+payload's frame (+Z toward the viewer), not the model's in-memory frame,
+which has Z negated: `eyeModelTicks(model)` gives it beside `ticksOf(vertex)`,
+and a renderer draws `drawnEye` as it is, without `toRender`.
+
+**Facing.** `face` (DECK-0003 §1.18) travels in `extra` too: how a worn avatar
+turns as it moves. `"path"`, the default, points the front (its -Z in the
+payload's frame) along the last move and tilts with it; `"upright"` keeps the
+top on the viewer's up, the up of the world as that viewer has turned it, and
+turns only about it, keeping the heading on a move straight up or down.
+`drawnFace(model)` gives the mode, `"path"` for anything absent, malformed or
+unknown (never a refusal); `readFace` reads a raw value; `withFace` sets it and
+leaves the field out for `"path"`. The turning itself is the client's, since
+only the client knows its viewer's up. A name a later revision adds is carried
+when the object is written back if it is shaped like a name (1 to 32 lowercase
+letters, digits and hyphens, from a letter); any other `face` is left off.
+
+**Point size and glow.** `pointsize` and `glow` (DECK-0003 §1.15, §1.16) travel
+in `extra`, as `anim` and `constrain` do. `drawnPointSize(model, { avatar })`
+gives the width of each point in ticks of the object's lattice (0 means no
+points), and `drawnGlow(model, { avatar })` gives `{ style, radius, strength }`
+with `style` `light` or `fog`, the radius in ticks and the strength a percent.
+Both are undefined outside `points` mode, for an avatar, and for a malformed
+value, which never refuses the object. `withPointSize` and `withGlow` set or
+clear them, and never write a malformed value. `suggestGlowStyle(rgb)` is the
+editor's first guess: light for a bright color, fog for a dark one.
+
+**Motion.** `anim` (DECK-0003 §1.14) rides in `ShardModel.extra`, like
+`constrain`, so a model from any version of this package keeps it through an
+edit. `animOf(model)` reads it as a reader must: the first four entries, each
+malformed, unknown or too-fast entry ignored while the rest apply, never a
+reason to refuse the object. `phaseAt(motion, t)` is the phase at Unix time
+`t`, good to about 1e-15 of a cycle at today's 1.8 billion seconds;
+`motionPose` and `composeRender` turn the phases into one matrix in the
+render frame, ready to sit above a mesh drawn with `toRender` and no pose (a
+mesh drawn with a §1.7 pose turn G takes G · A · Gᵀ, so the motion still
+comes before the pose). `withAnim(model, raw)` writes the canonical form (c
+over b in lowest terms, a forward swing or slide, path weights with no common
+factor) and drops the field when nothing is left. `toPayload` writes
+`extra.anim` exactly as it is held, so an editor that changes motions writes
+them through `withAnim`, and one that never touches them passes on motion
+words a later version may add. `animEdit` holds an
+editor's rules in ticks and the §2 frame: presets with familiar names (SPIN
+writes `turn`), speed in cycles a minute, the flicker warning, and every edit
+clamped with a plain message. `animClock` holds the clock rules: correct the
+device clock only past 2 seconds (`correctionFor`), and ease into a corrected
+time the shorter way round (`stepPhases`). Under reduced motion it sets
+`held`, and the client then draws the object as written with no motion
+matrix: phase 0 is not the rest pose of an orbit or a path. An avatar ignores `anim`; that is the client's to apply.
 
 **Carried objects.** `ShardModel.objects` is the payload's `objects`
 (DECK-0003 §1.10): the payloads of placed objects that travel inside the
@@ -82,13 +144,17 @@ point order, and omits it when empty.
 | `outline` | The edges of a set of faces |
 | `fingerprint` | An object's shape as canonical text, one letter-only token per triangle, for a similarity fingerprint such as Fanfares' `X` tag: the same under vertex and face order, winding, translation and recoloring, different under rotation, scale and mirroring |
 | `parts` | One object placing others (DECK-0003 §1.10): resolving placements through a client's fetch, with the depth, loop and placeholder rules, and where each one stands |
+| `anim` | Motion (DECK-0003 §1.14): reading `anim` as a reader must, the phase at a Unix time, each motion's pose, the composed matrix, and the canonical writer |
+| `animEdit` | A motion editor's rules, in ticks and the §2 frame: presets, speed in cycles a minute, the flicker warning, edits that only ever hold what a writer may write |
+| `animClock` | The reader's clock (§1.14): when to correct the device clock, and the catch-up ease when the correction changes |
 | `clip` | Cutting a mesh to a box, and the color interpolated across the cut |
 | `hsv` | Hue, saturation and brightness |
 | `scale` | A gibson count as a human distance, and the size of a cell |
 | `pose` | The two pose operations the format owns: `wrapSpin` and `applyPose` |
-| `importFile` | A 3D file picked by a person as a shard: PLY, STL, OBJ with its MTL, glTF or GLB, MagicaVoxel VOX. Format detection, size and time caps, and the request and answer a client's Web Worker passes |
+| `importFile` | A 3D file picked by a person as a shard: PLY, STL, OBJ with its MTL, glTF or GLB, MagicaVoxel VOX. Format detection, size and time caps, and the request and answer a client's Web Worker passes. Up is Y for PLY, OBJ and glTF, Z for STL and VOX, and Z for a PLY whose header says Blender wrote it (since 0.1.33), so a default Blender export stands |
 | `meshToShard` | Any mesh as an ordinary shard: fitted to the grid, quantized onto the lattice and welded, cleaned of faces with no area, colors snapped to the palette, and simplified by vertex clustering until the payload fits the byte budget |
 | `mesh`, `ply`, `stl`, `obj`, `gltf`, `vox` | The mesh every importer produces, the untrusted-input rules they share, and one pure parser per format. No dependencies and no network: a glTF buffer is read from the file, a data URI, or a file picked with it, never fetched |
+| `seeds` | Seeds ([DECK-0008](https://github.com/arkin0x/cyberspace/blob/master/decks/DECK-0008-seeds.md)): SEEDO parsing with every validity rule, terroir, the clock and the planted-height clamp, growing a bloom to a SNO payload and its hash, mixing, and the price of caps. A port of the DECK's reference interpreter, run against every section of its vectors (below) but `orientation`: how a bloom stands (§5.7) is drawing, which each client does |
 | `feed` | Published objects read from relays (the Shard Feed): the filter (never a tag filter), each relay read on its own with deadlines, newest per address, paging each relay to its own end, objects for sale (`listingFromEvent`: an encrypted 33331 whose `encrypted` element [3] is an `https:` NIP-FF-1 key service, any seller's, with one price in `SATS` and a short printable `d`, carried as `listings` with its title, price and preview pictures, never as geometry; one hidden at a place, `cyberspace:region`, is still left out), where a listing is bought (`sellerLink`: the seller's NIP-89 handler page when it lists kind 33331, else a known key service's app, else njump, with the link's own domain), and the proposed credit tag for a copy. Networking is the client's, passed in |
 
 ## What is deliberately not in it
@@ -123,6 +189,95 @@ loads under plain Node as well as under a bundler. That matters because a
 consumer's test run does not bundle its dependencies: vitest externalizes
 node_modules and hands them to Node.
 
+## Seeds, for client authors
+
+`sno-core/seeds` is the one implementation of DECK-0008 the clients share, so
+that every reader grows the same bloom. It has no DOM and no network: block
+hashes and header times are functions you pass in. Grow blooms in a Web Worker
+(§12, Compute); the module runs there unchanged, Safari before 16.4 included
+(it uses no regular-expression lookbehind).
+
+**Across the worker boundary, post the DNA's text and parse it in the worker.**
+A parsed `Dna` holds compiled functions and cannot be cloned. `tryGrowBloom`
+takes the text and returns `{ ok: false, error }` instead of throwing. A mixed
+child's computed text can pass 8,192 bytes: post it as `{ text, computed:
+true }`, and read a cached one back with `parseChildText`, not `parseDna`.
+
+```ts
+import {
+  parseDna, capsFromTags, readSeed, capsPrice, effectivePlantedHeight, growBloom, clockHeight,
+} from 'sno-core/seeds'
+
+const dna = parseDna(dnaEvent.content)            // throws SeedoError: a seed of it cannot grow
+const caps = capsFromTags(dnaEvent.tags)          // null: the DNA is invalid
+const read = readSeed(seedEvent)                  // the §8.2 checks, before you fetch the DNA
+if (!read.ok || caps === null || read.seed.target < capsPrice(caps)!) return
+
+const clock = clockHeight(tipHeight)              // the tip minus 6
+const p = effectivePlantedHeight(read.seed.planted, seedEvent.created_at, clock, headerTime)
+if (p.state === 'cannot-grow') return
+const bloom = growBloom(dna, {
+  coord: read.seed.coord,
+  planted: p.state === 'settled' ? p.height : null, // null draws generation 0
+  scale: read.seed.scale,
+  caps,
+}, clock, blockHash)
+// bloom.sno is a ShardPayload: draw it as a shard standing at the seed's C (§5.6)
+```
+
+- `blockHash(height)` returns 64 hex in the order block explorers display it.
+  When it returns nothing for a driving block, the bloom is drawn at the last
+  generation it could compute, with `behind: true` and `missingBlock` (§4.1).
+  A bloom that is behind is still drawn at the clock's age, so every symbol of
+  the generations it reached is fully grown; only the later rewrites are
+  missing.
+- `headerTime(height)` returns the header's `time` field. A missing header
+  leaves the planted height `pending`, never stepped over (§4.2).
+- A generation changes once a day of blocks. Cache `growSymbols(...)` per
+  generation and call `drawBloom(...)` each block; together they are
+  `growBloom`. `drawBloom` judges the string against the clock it draws at:
+  a string cached at an earlier generation is drawn `behind` until
+  `growSymbols(..., { from: cached })` grows it on, and one grown for another
+  DNA or seed, or past the clock's generation, is refused (check with
+  `growthApplies`). A render loop should call `growthApplies(...)` before
+  each draw and regrow when it returns false: a string cached while a seed
+  was unsettled (`planted: null`) stops applying the moment the seed settles.
+- On a phone, bound each call: `{ maxSteps }` stops before a generation that
+  would pass the budget (every call still grows at least one), and
+  `{ signal }` stops at the next generation once aborted. Either returns a
+  partial result with `stopped` set; resume with `{ from }`.
+  `worstCaseSteps(caps)` is the most a DNA's caps allow (generations times
+  symbols), for deciding what to grow at all.
+- `drawBloom(..., { json: false })` skips the payload's JSON and SHA-256 (a
+  stringify and a hash of up to megabytes); `{ buffers: true }` adds the
+  geometry as typed arrays, posted with `bloomTransferList(buffers)` as the
+  transfer list.
+- Mixing: `readMixedDna` checks a mixed DNA's tags and work (§8.1);
+  `mixSchedule` says when it resolves (the anchor checked against your
+  `blockHash`, as §6.2 requires, settling, the 36-block delay, depth, parents
+  resolved first); `mixWord(outcome
+  hash, commit id)` and `mixDna(mother, father, word, { name, hybrid })` give
+  the child and its exact text. A preview may pass any 32-bit word (§6.8).
+- Errors in a DNA's text are `SeedoError`, with the reference interpreter's
+  messages; `tryParseDna` returns them instead of throwing.
+
+The vectors are vendored in `src/seeds/fixtures/` with the spec commit they
+came from. A test checks the copy against `../cyberspace` (or
+`CYBERSPACE_SPEC_DIR`) whenever a checkout is there (`npm run
+check:seeds-vectors`). `npm run bench:seeds`, after `npm run build:dist`,
+times growth, and the reference beside it when the checkout is there.
+
+Where the DECK and its reference interpreter disagree, this follows the DECK:
+a comment is removed from its first `#` whatever follows it, a CR, U+2028 or
+U+2029 included (§3.1); a mixed child's computed text is not held to 8,192 bytes
+(§3.1); every name, `__proto__` included, is an ordinary name; and a missing
+block or header is reported rather than thrown (§4.1, §4.2). No vector reaches
+any of these.
+
+SHA-256 comes from `@noble/hashes`, the package's one runtime dependency,
+which the clients already carry through nostr-tools. It is synchronous, which
+growth needs, and runs in browsers and workers.
+
 ## Consuming it from an app
 
 A git dependency pinned to a tag:
@@ -132,10 +287,14 @@ A git dependency pinned to a tag:
 ```
 
 `npm` records the resolved commit in the lockfile, so `npm ci` installs exactly
-what was reviewed even if the tag is later moved. `prepare` builds `dist` at
-install time, which is why `typescript` is a runtime dependency rather than a
-dev one: npm installs a git dependency's `dependencies`, and `prepare` has to be
-able to run.
+what was reviewed even if the tag is later moved. `dist` is committed, so the
+install builds nothing: npm runs a full install of a git dependency
+(devDependencies and all) and its `prepare` only when its package.json has a
+`build`, `prepare`, `prepack`, `install`, `preinstall` or `postinstall` script,
+and this one has none of them (the build is `build:dist`). No `tsc`, no
+devDependencies; `typescript` is only a devDependency. That also fixes `npm i -g`
+of a package that depends on this one from git, whose nested `prepare` could
+not find `tsc`.
 
 Nothing is published to npm. The two consumers are known, the package is public,
 and a registry release is a second place to get the version wrong.
@@ -146,8 +305,13 @@ and a registry release is a second place to get the version wrong.
 npm install
 npm run typecheck
 npm test
-npm run build
+npm run build:dist   # rewrites dist/ from src/
+npm run check:dist   # rebuilds dist/; exits 1 unless the committed dist/ matches
 ```
+
+`dist/` is committed. Rebuild it and commit it with every change to `src/`;
+`check:dist` (and CI) fails when the two disagree. The build is reproducible:
+the same `src/` and the same locked `tsc` give the same bytes.
 
 A change here reaches a client when that client's `package.json` moves to a new
 tag and its lockfile is updated. Tag from `main` once the tests pass.

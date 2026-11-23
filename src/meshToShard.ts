@@ -5,7 +5,7 @@
  * ShardModel that every reader of the format accepts, without changing the
  * format at all (DECK-0003). The steps, in order:
  *
- *   1. Up. A Z-up file (STL, MagicaVoxel) is turned onto SNO's Y up by a
+ *   1. Up. A Z-up file (STL, MagicaVoxel, a PLY Blender wrote) is turned onto SNO's Y up by a
  *      rotation, (x, y, z) to (x, z, -y), never a mirror, so every face keeps
  *      its front (§2).
  *   2. Fit. The mesh is scaled so its largest side is `fit` ticks, keeping its

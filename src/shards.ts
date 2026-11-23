@@ -117,9 +117,9 @@ export interface ShardModel {
   /**
    * How opaque the object is drawn, a whole percent (DECK-0003 §1.11). Absent
    * means fully opaque, which is every object written before the field
-   * existed. A model from `fromPayload` or `normalizeStored` holds 1 to 99 or
-   * nothing (100 and malformed values read as absent); 1 to 9 are kept as
-   * written and drawn at the floor by `drawnOpacity`.
+   * existed. A model from `fromPayload` or `normalizeStored` holds 0 to 99 or
+   * nothing (100 and malformed values read as absent). At 0 the object draws
+   * nothing of its own, and its glow (glow.ts) still shows.
    */
   opacity?: number
   /**
@@ -154,7 +154,9 @@ export interface ShardModel {
    * everyone who reads the object after them. Carried here, it travels
    * through every edit untouched, and the newer reader still finds it.
    *
-   * Never read, only carried. Not validated, because this library cannot know
+   * Carried, and read only by the modules that know a field's meaning
+   * (glow.ts reads `pointsize` and `glow`, anim.ts `anim`, eye.ts `eye`, face.ts `face`). Not
+   * validated here, because this library cannot know
    * what a field it does not know should look like; a newer reader validates
    * it as its own version of the format says. Carried unchanged even when the
    * geometry is edited, which is right for a setting that does not depend on
@@ -234,7 +236,7 @@ export interface ShardPayload {
    * default and not the same as colour 0 (DECK-0003 §1.4a).
    */
   facecolors?: number[]
-  /** A whole percent 1 to 100; absent means 100 (DECK-0003 §1.11). Omitted when 100. */
+  /** A whole percent 0 to 100; absent means 100 (DECK-0003 §1.11). Omitted when 100. */
   opacity?: number
   /** Present and true when the shard stands on the Earth where it is hidden (lib/pose.ts). Absent otherwise. */
   up?: true
@@ -361,9 +363,31 @@ export function unknownFields(p: object): Record<string, unknown> | undefined {
   return entries.length ? Object.fromEntries(entries) : undefined
 }
 
+/** `extra` with a version 1 payload's `eye` Z negated into the version 2 frame (eye.ts); anything else as it is. */
+function v1Eye(extra: Record<string, unknown> | undefined, v: unknown): Record<string, unknown> | undefined {
+  const eye = extra?.eye
+  // Only an eye that reads as one turns; anything else is carried as it came (and left off the wire, carried()).
+  if (v !== 1 || !extra || !wellFormedEye(eye)) return extra
+  return { ...extra, eye: [eye[0] + 0, eye[1] + 0, -eye[2] + 0] }
+}
+
 /** The carried fields to write: `extra` without anything this library computes. Not copied again. */
 function carried(extra: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined))
+  // A publisher never writes a malformed `eye` (DECK-0003 §1.17): one this
+  // library cannot read as an eye is left off the wire rather than passed on.
+  // Nor a `face` that could not be a mode's name (§1.18): a name this version
+  // does not know is carried, since a later revision may define it.
+  return Object.fromEntries(Object.entries(extra).filter(([k, v]) => !KNOWN.has(k) && v !== undefined && (k !== 'eye' || wellFormedEye(v)) && (k !== 'face' || faceNameShape(v))))
+}
+
+/** A string shaped like a facing mode's name, `"path"`, `"upright"` or one a later revision adds: 1 to 32 lowercase letters, digits and hyphens, from a letter (§1.18). */
+function faceNameShape(v: unknown): v is string {
+  return typeof v === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(v)
+}
+
+/** Three integers, each -7680..7680: an `eye` as §1.17 reads it (eye.ts readEye, which imports this module). */
+function wellFormedEye(v: unknown): v is [number, number, number] {
+  return Array.isArray(v) && v.length === 3 && v.every((c) => Number.isInteger(c) && Math.abs(c as number) <= 64 * TICKS_PER_UNIT)
 }
 
 /** Default half-width of the build grid, in units; each shard keeps its own (`extent`). */
@@ -474,7 +498,7 @@ export function normalizeStored(saved: ShardModel): ShardModel {
   const lifted = liftKnown(saved)
   const { opacity: _held, ...bare } = lifted
   const opacity = readOpacity(lifted.opacity)
-  const s: ShardModel = lifted.opacity === opacity ? lifted : opacity === undefined ? bare : { ...bare, opacity }
+  const s: ShardModel = Object.is(lifted.opacity, opacity) ? lifted : opacity === undefined ? bare : { ...bare, opacity }
   // Models from before the pose have no `up` or `spin`: they lie as built.
   const stored = s as Partial<ShardModel>
   const posed = stored.up === undefined || stored.spin === undefined ? { ...s, up: stored.up ?? false, spin: stored.spin ?? 0 } : s
@@ -637,31 +661,34 @@ function readPart(e: unknown, refCount: number, mirror: boolean): Part | null {
   return { ref, at: mirror ? [x, y, 0 - z] : [x, y, z], turn: mirror ? mirrorTurn(turn) : turn, step }
 }
 
-/** The least opacity an object is drawn at, in percent: nothing is ever wholly invisible (DECK-0003 §1.11). */
-export const OPACITY_FLOOR = 10
-
 /**
  * The `opacity` a payload carries, or undefined for fully opaque.
  *
- * A malformed value (not an integer, outside 1..100, null, a string) is
+ * A malformed value (not an integer, outside 0..100, null, a string) is
  * repaired to opaque rather than refused, as `extent` is repaired (§1.11):
  * opaque is always a correct way to draw an object, so a bad value costs the
  * author their translucency and nothing else. 100 reads as absent too, so a
- * model only ever holds 1 to 99.
+ * model only ever holds 0 to 99. `-0` is the integer 0 (JSON has one zero).
+ *
+ * Until 0.1.30 the range was 1 to 100 with a floor of 10, and 0 was malformed.
+ * The owner ruled 0 to 100 on 2026-11-15, with no floor: at 0 an object draws
+ * nothing of its own, so that its glow can be cast without a point.
  */
 export function readOpacity(raw: unknown): number | undefined {
-  return Number.isInteger(raw) && (raw as number) >= 1 && (raw as number) < 100 ? (raw as number) : undefined
+  return Number.isInteger(raw) && (raw as number) >= 0 && (raw as number) < 100 ? (raw as number) + 0 : undefined
 }
 
 /**
- * The opacity to draw `s` at, as a fraction from 0.1 to 1: its own percent
- * with the floor applied, or 1 when it has none. A placed object's comes from
- * its own model, never from the object that places it (§1.10), and a reader
- * drawing an avatar ignores it altogether (§3.3).
+ * The opacity to draw `s` at, as a fraction from 0 to 1: its own percent, or
+ * 1 when it has none. 0 draws nothing of the object's own: no faces, edges or
+ * points. It never reaches the object's glow, whose strength is its own
+ * (glow.ts, DECK-0003 §1.16). A placed object's comes from its own model,
+ * never from the object that places it (§1.10), and a reader drawing an avatar
+ * ignores it altogether (§3.3).
  */
 export function drawnOpacity(s: Pick<ShardModel, 'opacity'>): number {
   const o = readOpacity(s.opacity)
-  return o === undefined ? 1 : Math.max(o, OPACITY_FLOOR) / 100
+  return o === undefined ? 1 : o / 100
 }
 
 export function toPayload(s: ShardModel): ShardPayload {
@@ -693,7 +720,7 @@ export function toPayload(s: ShardModel): ShardPayload {
     // no place, so they travel untouched and nothing applies them.
     ...(s.up ? { up: true as const, spin: wrapSpin(s.spin) } : {}),
     // §1.11: written only below 100, the canonical form, and only when valid.
-    ...(readOpacity(s.opacity) !== undefined ? { opacity: s.opacity } : {}),
+    ...((): { opacity?: number } => { const o = readOpacity(s.opacity); return o !== undefined ? { opacity: o } : {} })(),
     // §1.10: what this object carries for its placements, flat, in key order.
     ...((): { objects?: Record<string, unknown> } => { const o = writtenObjects(s); return o ? { objects: o } : {} })(),
     // Fields this library does not know, written back as they were read
@@ -744,7 +771,8 @@ export function packFaceColors(indices: number[]): number[] {
 
 /**
  * Face colours read back, one index per face, or null when they do not fit
- * `count` faces or name a colour the palette does not have.
+ * `count` faces or name a colour the palette does not have. A run longer than
+ * the faces left is refused before it is expanded.
  *
  * The sign separates an index from a run, which works because an index is
  * never negative. It is the same trick `ticks` uses, and it is why a colour
@@ -762,8 +790,11 @@ export function unpackFaceColors(packed: unknown, count: number, palette: Palett
     if ((e as number) < 0) {
       // A run repeats the index before it, so the first entry cannot be one.
       if (out.length === 0) return null
+      // Each run must fit the room left in the declared count.
+      const run = -(e as number)
+      if (run > count - out.length) return null
       const prev = out[out.length - 1]
-      for (let i = 0; i < -(e as number); i++) out.push(prev)
+      for (let i = 0; i < run; i++) out.push(prev)
     } else {
       if ((e as number) >= palette.length) return null
       out.push(e as number)
@@ -802,7 +833,11 @@ export function expandFaceColors(s: ShardModel): ShardModel {
   return { ...s, vertices, faces, facecolors: undefined }
 }
 
-/** The ticks column read back, one triple per vertex, or null when it does not fit `count` vertices. */
+/**
+ * The ticks column read back, one triple per vertex, or null when it does not
+ * fit `count` vertices. A run longer than the vertices left is refused before
+ * it is expanded, as is a run of none.
+ */
 export function unpackTicks(packed: unknown, count: number): Array<[number, number, number]> | null {
   if (packed === undefined) return Array.from({ length: count }, () => [0, 0, 0])
   if (!Array.isArray(packed)) return null
@@ -810,6 +845,8 @@ export function unpackTicks(packed: unknown, count: number): Array<[number, numb
   for (const e of packed) {
     if (typeof e === 'number') {
       if (!Number.isInteger(e) || e >= 0) return null
+      // Held to the vertices left before it is expanded, as a face colour run is.
+      if (-e > count - out.length) return null
       for (let i = 0; i < -e; i++) out.push([0, 0, 0])
     } else if (Array.isArray(e) && e.length === 3 && e.every((t) => Number.isInteger(t) && t >= 0 && t < TICKS_PER_UNIT)) {
       out.push([e[0], e[1], e[2]])
@@ -916,7 +953,10 @@ export function fromPayload(raw: unknown, id: string, fetchedPalette?: string | 
     parts = []
     for (const e of p.parts) { const part = readPart(e, refs?.length ?? 0, p.v === WIRE_VERSION); if (!part) return null; parts.push(part) }
   }
-  const extra = unknownFields(p)
+  // An `eye` (eye.ts, §1.17) is in the payload's frame, as the vertices are:
+  // a version 1 payload's Z points the other way (§2), so its eye is carried
+  // in the version 2 frame, the one `extra` is written back out in.
+  const extra = v1Eye(unknownFields(p), p.v)
   const opacity = readOpacity(p.opacity)
   // §1.10: read, never a reason to refuse (rule 16); the entries are checked one
   // at a time when a placement draws from them (parts.ts).
