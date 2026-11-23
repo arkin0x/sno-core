@@ -15,10 +15,10 @@
  * both rules, `readPointSize` and `readGlow` read the bare value.
  */
 
-import { TICKS_PER_UNIT, type ShardModel } from './shards.js'
+import { TICK_REACH, type ShardModel } from './shards.js'
 
-/** The farthest any tick distance in an object reaches: 64 units, the §1.8 position bound. */
-export const GLOW_REACH = 64 * TICKS_PER_UNIT
+/** The farthest any tick distance in an object reaches: the §1.8 position bound (TICK_REACH, 491520). */
+export const GLOW_REACH = TICK_REACH
 
 /** The two glow styles. `light` adds its color to what is behind it; `fog` lays its color over it. */
 export const GLOW_STYLES = ['light', 'fog'] as const
@@ -27,7 +27,7 @@ export type GlowStyle = (typeof GLOW_STYLES)[number]
 /**
  * One object's glow, as read.
  *
- * `radius` is in ticks of the object's own lattice, 1 to 7680, from each
+ * `radius` is in ticks of the object's own lattice, 1 to GLOW_REACH, from each
  * point's centre to where the glow fades to nothing. `strength` is a whole
  * percent, 1 to 100: how strong the glow is at the point's centre. It is the
  * glow's own and the object's `opacity` never multiplies it (owner, 2026-11-15:
@@ -45,7 +45,7 @@ export type GlowWire = [GlowStyle, number, number]
 const isInt = (n: unknown): n is number => Number.isInteger(n)
 
 /**
- * A `pointsize` value read as §1.15 reads it: a JSON integer from 0 to 7680
+ * A `pointsize` value read as §1.15 reads it: a JSON integer from 0 to GLOW_REACH
  * ticks, or undefined, which means the reader's own size. 0 is valid and
  * means no points are drawn. `-0` is the integer 0.
  */
@@ -56,7 +56,7 @@ export function readPointSize(raw: unknown): number | undefined {
 /**
  * A `glow` value read as §1.16 reads it, or undefined for no glow: exactly
  * three elements, the word `"light"` or `"fog"` (lowercase and exact), a
- * radius that is a JSON integer from 1 to 7680, and a strength that is a JSON
+ * radius that is a JSON integer from 1 to GLOW_REACH, and a strength that is a JSON
  * integer from 1 to 100. Anything else, null included, is no glow.
  */
 export function readGlow(raw: unknown): Glow | undefined {

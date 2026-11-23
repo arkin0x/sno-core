@@ -6,7 +6,7 @@
  * through fromPayload and toPayload, never a reason to refuse an object.
  */
 import { describe, expect, it } from 'vitest'
-import { animOf, composeRender, hasAnim, MOTIONS, motionPose, newPose, phaseAt, readAnim, readMotion, withAnim, writeMotion, type Motion } from './anim.js'
+import { animOf, composeRender, hasAnim, MOTIONS, motionPose, newPose, phaseAt, REACH, readAnim, readMotion, withAnim, writeMotion, type Motion } from './anim.js'
 import { fromPayload, newShard, toPayload, type ShardModel } from './shards.js'
 
 const m = (raw: unknown): Motion => {
@@ -85,10 +85,10 @@ describe('reading', () => {
       ['turn', 'w', 1, 1, 0], ['turn', 'y', 1.5, 1, 0], ['turn', 'y', 1, 0, 0], ['turn', 'y', 1, 1, 360], ['turn', 'y', 1, 1],
       ['turn', 'y', 0, 1, 0], ['turn', 'y', 3, 1, 0], ['turn', 'y', 1201, 600, 0], ['turn', 'y', 1, 31_536_001, 0], ['turn', 'Y', 1, 1, 0],
       ['turn', 'y', '1', 1, 0], ['turn', 'y', 1, 1, -1], ['turn', 'y', 1, 1, 0, 0],
-      ['swing', 'x', 0, 1, 1, 0], ['swing', 'x', 181, 1, 1, 0], ['slide', 'x', 0, 1, 1, 0], ['slide', 'x', 7681, 1, 1, 0],
-      ['orbit', 'y', 0, 1, 1, 0], ['orbit', 'y', 7681, 1, 1, 0], ['lift', 'y', 0, 10, 1, 1, 0], ['lift', 'y', 10, 50, 1, 1, 0], ['lift', 'y', -7681, 0, 1, 1, 0],
+      ['swing', 'x', 0, 1, 1, 0], ['swing', 'x', 181, 1, 1, 0], ['slide', 'x', 0, 1, 1, 0], ['slide', 'x', REACH + 1, 1, 1, 0],
+      ['orbit', 'y', 0, 1, 1, 0], ['orbit', 'y', REACH + 1, 1, 1, 0], ['lift', 'y', 0, 10, 1, 1, 0], ['lift', 'y', 10, 50, 1, 1, 0], ['lift', 'y', -REACH - 1, 0, 1, 1, 0],
       ['path', 1, 1, 0, [0, 0, 0, 1]], ['path', 1, 1, 0, [0, 0, 0, 0], [1, 1, 1, 1]], ['path', 1, 1, 0, [0, 0, 0, 1001], [1, 1, 1, 1]],
-      ['path', 1, 1, 0, [7681, 0, 0, 1], [1, 1, 1, 1]], ['path', 1, 1, 0, [0, 0, 1], [1, 1, 1, 1]], ['path', 'y', 1, 1, 0, [0, 0, 0, 1], [1, 1, 1, 1]],
+      ['path', 1, 1, 0, [REACH + 1, 0, 0, 1], [1, 1, 1, 1]], ['path', 1, 1, 0, [0, 0, 1], [1, 1, 1, 1]], ['path', 'y', 1, 1, 0, [0, 0, 0, 1], [1, 1, 1, 1]],
       ['path', 1, 1, 0, ...Array.from({ length: 33 }, () => [0, 0, 0, 1])],
       ['spin', 'y', 1, 1, 0], ['constructor', 'y', 1, 1, 0], ['__proto__', 'y', 1, 1, 0], 'turn', 7, null, {}, [],
     ]
@@ -98,9 +98,10 @@ describe('reading', () => {
     for (const raw of [undefined, null, 'x', 3, {}, [[]], [[null]]]) expect(readAnim(raw)).toEqual([])
   })
 
-  it('reads the boundary values (at most two cycles a second, b up to a year)', () => {
-    for (const ok of [['turn', 'y', 2, 1, 359], ['turn', 'y', -63_072_000, 31_536_000, 0], ['turn', 'y', 1200, 600, 0], ['turn', 'y', 1, 31_536_000, 0], ['slide', 'z', 7680, 1, 1, 0], ['lift', 'x', -7680, 49, 1, 1, 0],
-      ['path', 1, 1, 0, [-7680, 7680, 0, 1000], [0, 0, 0, 1]], ['path', 1, 1, 0, ...Array.from({ length: 32 }, () => [0, 0, 0, 1])]]) expect(readMotion(ok)).not.toBeNull()
+  it('reads the boundary values (at most two cycles a second, b up to a year, distances up to 4,096 units)', () => {
+    expect(REACH).toBe(4096 * 120)
+    for (const ok of [['turn', 'y', 2, 1, 359], ['turn', 'y', -63_072_000, 31_536_000, 0], ['turn', 'y', 1200, 600, 0], ['turn', 'y', 1, 31_536_000, 0], ['slide', 'z', REACH, 1, 1, 0], ['lift', 'x', -REACH, 49, 1, 1, 0], ['orbit', 'y', 7681, 1, 1, 0],
+      ['path', 1, 1, 0, [-REACH, REACH, 0, 1000], [0, 0, 0, 1]], ['path', 1, 1, 0, ...Array.from({ length: 32 }, () => [0, 0, 0, 1])]]) expect(readMotion(ok)).not.toBeNull()
   })
 
   it('reads at most the first four entries', () => {

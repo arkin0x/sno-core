@@ -281,7 +281,21 @@ export declare function unknownFields(p: object): Record<string, unknown> | unde
 /** Default half-width of the build grid, in units; each shard keeps its own (`extent`). */
 export declare const GRID_HALF = 8;
 export declare const MIN_EXTENT = 1;
-export declare const MAX_EXTENT = 64;
+/**
+ * The furthest a publisher may put anything from the origin, in units, on any
+ * axis (DECK-0003 §1.8). 2^12, because that is the largest power of two at
+ * which every tick draws within a quarter of a tick of where it belongs with
+ * room to spare.
+ * What sets it is the 32-bit float every GPU draws in, and not only the
+ * position: the attribute, the model-view matrix and their product are all
+ * 32-bit, so near the far corner the error adds up beyond the rounding of the
+ * position alone. Simulated worst error, camera close to the far corner: 4,096
+ * units 0.13 of a tick, 8,192 units 0.24 to 0.28 (on the line), 16,384 units
+ * 0.51, 32,768 units 1.00 with ticks collapsing, 65,536 units 2.10. More than
+ * this needs camera-relative rendering. It was 64 from 2026-09-05 to 2026-10-31, chosen for the first GRID
+ * panel and never derived from anything.
+ */
+export declare const MAX_EXTENT = 4096;
 /**
  * The largest `unit` a shard can be built or deployed at.
  *
@@ -317,8 +331,15 @@ export declare function validPoint(p: [number, number, number], extent?: number)
 /**
  * A stored model made whole again. Models have always kept `p` in units; for
  * a short while after ticks arrived they kept total ticks there instead, and
- * such a model shows itself by a coordinate no grid could hold (above
- * MAX_EXTENT units). Those are split back into units and ticks.
+ * such a model shows itself by a coordinate no grid could hold then (above 64
+ * units) that its own extent does not hold either. Those are split back into
+ * units and ticks.
+ *
+ * Both tests are needed. A model of that time has an extent of 64 at most, so
+ * for those the answer is what it always was. A later model on a larger grid
+ * has an extent that holds its points, because every path that writes one
+ * keeps it so (neededExtent), and reading its 100 as 100 ticks would shrink
+ * the author's work by a factor of 120 on every reload.
  */
 export declare function normalizeStored(saved: ShardModel): ShardModel;
 /** The grid half-width a shard needs to hold every vertex it has. */
@@ -346,7 +367,14 @@ export declare function validFace(f: [number, number, number], count: number): b
  * on the way out. A publisher writes 2 forever.
  */
 export declare const WIRE_VERSION = 2;
-/** The 64-unit position bound of DECK-0003 §1.8, in ticks: how far a placement may stand. */
+/**
+ * The position bound of DECK-0003 §1.8 in ticks, 4096 × 120 = 491520: the
+ * farthest any distance in ticks an object carries may reach (a placement's
+ * offset, a point's size, a glow's radius, an eye, a motion's travel). It was
+ * 64 × 120 = 7680 until 2026-11-23.
+ */
+export declare const TICK_REACH: number;
+/** The position bound of DECK-0003 §1.8, in ticks: how far a placement may stand. */
 export declare const PART_REACH: number;
 /**
  * §1.10 and §1.9 rule 16: the `objects` a payload carries, or undefined for

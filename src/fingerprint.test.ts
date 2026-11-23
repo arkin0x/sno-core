@@ -252,7 +252,7 @@ describe('canonicalGeometryText: objects with no faces', () => {
 })
 
 describe('canonicalGeometryText: range', () => {
-  it('spells the 64-unit publisher bound, corner to corner, as single tokens', () => {
+  it('spells the former 64-unit bound, corner to corner, as single tokens', () => {
     const wide = model([[-7680, -7680, -7680], [7680, -7680, -7680], [-7680, 7680, 7680]], [[0, 1, 2]])
     const text = canonicalGeometryText(wide)
     // Model Z is the wire's negated, so (0,0,15360) (0,15360,0) (15360,0,15360) once moved.

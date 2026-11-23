@@ -385,9 +385,9 @@ function faceNameShape(v: unknown): v is string {
   return typeof v === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(v)
 }
 
-/** Three integers, each -7680..7680: an `eye` as §1.17 reads it (eye.ts readEye, which imports this module). */
+/** Three integers, each within ±TICK_REACH: an `eye` as §1.17 reads it (eye.ts readEye, which imports this module). */
 function wellFormedEye(v: unknown): v is [number, number, number] {
-  return Array.isArray(v) && v.length === 3 && v.every((c) => Number.isInteger(c) && Math.abs(c as number) <= 64 * TICKS_PER_UNIT)
+  return Array.isArray(v) && v.length === 3 && v.every((c) => Number.isInteger(c) && Math.abs(c as number) <= MAX_EXTENT * TICKS_PER_UNIT)
 }
 
 /** Default half-width of the build grid, in units; each shard keeps its own (`extent`). */
@@ -557,8 +557,15 @@ function flipZ(v: ShardVertex): ShardVertex {
   return vertexAt([x, y, 0 - z], v.c)
 }
 
+/**
+ * The position bound of DECK-0003 §1.8 in ticks, 4096 × 120 = 491520: the
+ * farthest any distance in ticks an object carries may reach (a placement's
+ * offset, a point's size, a glow's radius, an eye, a motion's travel). It was
+ * 64 × 120 = 7680 until 2026-11-23.
+ */
+export const TICK_REACH = MAX_EXTENT * TICKS_PER_UNIT
 /** The position bound of DECK-0003 §1.8, in ticks: how far a placement may stand. */
-export const PART_REACH = MAX_EXTENT * TICKS_PER_UNIT
+export const PART_REACH = TICK_REACH
 
 const HEX64 = /^[0-9a-f]{64}$/
 const ADDRESS = /^33331:[0-9a-f]{64}:/

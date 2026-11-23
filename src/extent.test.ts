@@ -1,12 +1,15 @@
 /**
  * The position bound (DECK-0003 §1.8), and what depends on it. It was 64 units
- * until 2026-10-31. These hold the new number to its derivation, keep models
+ * until 2026-11-23, when the owner ruled 4,096. These hold the new number to its derivation, keep models
  * stored under the old one reading exactly as they did, and keep a larger model
  * from being read as ticks on reload.
  */
 import { describe, expect, it } from 'vitest'
-import { GRID_HALF, MAX_EXTENT, MIN_EXTENT, PART_REACH, TICKS_PER_UNIT, fromPayload, neededExtent, newShard, normalizeStored, ticksOf, toPayload, validPoint, type ShardModel, type ShardVertex } from './shards.js'
+import { GRID_HALF, MAX_EXTENT, MIN_EXTENT, PART_REACH, TICK_REACH, TICKS_PER_UNIT, fromPayload, neededExtent, newShard, normalizeStored, ticksOf, toPayload, validPoint, type ShardModel, type ShardVertex } from './shards.js'
 import { importFitFor } from './meshToShard.js'
+import { REACH } from './anim.js'
+import { EYE_REACH } from './eye.js'
+import { GLOW_REACH } from './glow.js'
 
 const WHITE: [number, number, number] = [1, 1, 1]
 const at = (p: [number, number, number]): ShardVertex => ({ p, c: WHITE })
@@ -153,5 +156,13 @@ describe('normalizeStored', () => {
     }
     expect(inTicks).toBeGreaterThan(500)
     expect(inTicks).toBeLessThan(3900)
+  })
+})
+
+describe('every distance in ticks shares the bound (§1.8)', () => {
+  it('is 4096 × 120 for a placement, a point size, a glow, an eye and a motion', () => {
+    expect(MAX_EXTENT).toBe(4096)
+    expect(TICK_REACH).toBe(491520)
+    for (const r of [PART_REACH, GLOW_REACH, EYE_REACH, REACH]) expect(r).toBe(TICK_REACH)
   })
 })

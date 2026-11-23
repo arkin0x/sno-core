@@ -16,9 +16,9 @@ const column = (bottom: number, top: number): ShardModel => ({
 // Every kind of value in the DECK-0003 §1.17 table, one to one with
 // sno-reference.py drawn_eye.
 describe('eye (DECK-0003 §1.17)', () => {
-  it('reads three whole numbers of ticks, each -7680 to 7680', () => {
-    expect(EYE_REACH).toBe(7680)
-    for (const e of [[0, 159, 0], [0, 0, 0], [-12, 30, -480], [EYE_REACH, -EYE_REACH, 0]]) expect(readEye(e)).toEqual(e)
+  it('reads three whole numbers of ticks, each -491520 to 491520 (4,096 units)', () => {
+    expect(EYE_REACH).toBe(491520)
+    for (const e of [[0, 159, 0], [0, 0, 0], [-12, 30, -480], [EYE_REACH, -EYE_REACH, 0], [0, 7681, 0]]) expect(readEye(e)).toEqual(e)
     expect(Object.is(readEye([-0, 1, 0])![0], 0)).toBe(true)
   })
 
@@ -97,7 +97,8 @@ describe('eye: frames and malformed values (review)', () => {
     const base = { ...(toPayload(column(0, 240)) as unknown as Record<string, unknown>), v: 1, colors: [[1, 1, 1], [1, 1, 1], [1, 1, 1]] }
     const zero = fromPayload({ ...base, eye: [0, 10, 0] }, 'a')!
     expect(Object.is((zero.extra!.eye as number[])[2], 0)).toBe(true)
-    expect(fromPayload({ ...base, eye: [0, 0, -7681] }, 'b')!.extra!.eye).toEqual([0, 0, -7681])
+    expect(fromPayload({ ...base, eye: [0, 0, -7681] }, 'b')!.extra!.eye).toEqual([0, 0, 7681])
+    expect(fromPayload({ ...base, eye: [0, 0, -EYE_REACH - 1] }, 'b2')!.extra!.eye).toEqual([0, 0, -EYE_REACH - 1])
     expect(fromPayload({ ...base, eye: [0, 'x', 5] }, 'c')!.extra!.eye).toEqual([0, 'x', 5])
   })
 
