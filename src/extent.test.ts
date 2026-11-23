@@ -58,6 +58,9 @@ describe('why 2^12 units', () => {
 
   it('is the largest power of two that does with room to spare: the next sits on the line, and the one after is past it', () => {
     expect(Math.max(worstDrawnError(MAX_EXTENT, 0.6), worstDrawnError(MAX_EXTENT, 3))).toBeLessThan(0.2)
+    const next = Math.max(worstDrawnError(MAX_EXTENT * 2, 0.6), worstDrawnError(MAX_EXTENT * 2, 3))
+    expect(next).toBeGreaterThan(0.2)
+    expect(next).toBeLessThan(0.3)
     expect(Math.max(worstDrawnError(MAX_EXTENT * 4, 0.6), worstDrawnError(MAX_EXTENT * 4, 3))).toBeGreaterThan(0.25)
   })
 

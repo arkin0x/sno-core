@@ -292,8 +292,9 @@ export declare const MIN_EXTENT = 1;
  * position alone. Simulated worst error, camera close to the far corner: 4,096
  * units 0.13 of a tick, 8,192 units 0.24 to 0.28 (on the line), 16,384 units
  * 0.51, 32,768 units 1.00 with ticks collapsing, 65,536 units 2.10. More than
- * this needs camera-relative rendering. It was 64 from 2026-09-05 to 2026-10-31, chosen for the first GRID
- * panel and never derived from anything.
+ * this needs camera-relative rendering. It was 64 from 2026-09-05 until the
+ * owner ruled 4,096 on 2026-11-23: chosen for the first GRID panel and never
+ * derived from anything.
  */
 export declare const MAX_EXTENT = 4096;
 /**

@@ -4,10 +4,9 @@
  * scale and mirroring, and every triangle reaches the fingerprint whole.
  */
 
-import { MAX_EXTENT } from './shards'
 import { describe, it, expect } from 'vitest'
 import { canonicalGeometryText } from './fingerprint.js'
-import { fromPayload, newShard, toPayload, vertexAt, type ShardModel, type ShardVertex } from './shards.js'
+import { MAX_EXTENT, fromPayload, newShard, toPayload, vertexAt, type ShardModel, type ShardVertex } from './shards.js'
 import { BUILT_IN } from './snoPalette.js'
 
 const RED: [number, number, number] = [1, 0, 0]
